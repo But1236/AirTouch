@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  备份规则：排除 SharedPreferences 中的证书指纹与 token。
+  证书指纹是「本机—本服务器」的 TOFU 信任记录，恢复到另一台设备上没有意义且会带来误导，
+  因此明确排除；其余设置可以随备份迁移。
+-->
+<full-backup-content>
+    <exclude
+        domain="sharedpref"
+        path="airtouch_settings.xml" />
+    <exclude
+        domain="file"
+        path="airtouch_tmp" />
+</full-backup-content>

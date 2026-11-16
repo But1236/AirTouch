@@ -1,0 +1,203 @@
+<Window x:Class="AirTouch.Server.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AirTouch 手机遥控服务端" Height="700" Width="1000"
+        MinHeight="600" MinWidth="900"
+        Background="#FF1B1C22" Foreground="#FFE8E8EE"
+        WindowStartupLocation="CenterScreen"
+        FontFamily="Microsoft YaHei UI, Segoe UI">
+
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="190" />
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <DockPanel Grid.Row="0" Margin="0,0,0,14">
+            <TextBlock DockPanel.Dock="Right" VerticalAlignment="Bottom"
+                       FontSize="12" Foreground="{StaticResource MutedTextBrush}"
+                       Text="wss 加密 · 一次性 Token · IP 绑定" />
+            <TextBlock Text="AirTouch 服务端" FontSize="22" FontWeight="Bold" />
+        </DockPanel>
+
+        <!-- Body -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="360" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- QR panel -->
+            <Border Grid.Column="0" Style="{StaticResource Panel}" Margin="0,0,14,0">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Style="{StaticResource SectionTitle}"
+                               Text="手机扫码配对（仅本机可用的令牌）" />
+
+                    <Button DockPanel.Dock="Bottom" Style="{StaticResource ActionButton}"
+                            x:Name="BtnSaveQr" Content="保存二维码" Margin="0,10,0,0"
+                            Click="OnSaveQrClick" />
+
+                    <Button DockPanel.Dock="Bottom" Style="{StaticResource ActionButton}"
+                            x:Name="BtnCopyUrl" Content="复制连接链接" Margin="0,10,0,0"
+                            Click="OnCopyUrlClick" />
+
+                    <StackPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+                        <TextBlock Style="{StaticResource FieldLabel}" Text="连接地址" Margin="0,0,0,4" />
+                        <TextBox x:Name="TxtUrl" IsReadOnly="True" TextWrapping="Wrap"
+                                 Background="#FF1B1C22" Foreground="#FF8FD2FF"
+                                 BorderBrush="{StaticResource PanelBorderBrush}"
+                                 FontFamily="Consolas" FontSize="12" Padding="6" />
+                    </StackPanel>
+
+                    <Border Background="White" CornerRadius="6" Padding="8"
+                            HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Image x:Name="QrImage" Width="268" Height="268"
+                               RenderOptions.BitmapScalingMode="NearestNeighbor"
+                               Stretch="Uniform" />
+                    </Border>
+                </DockPanel>
+            </Border>
+
+            <!-- Status panel -->
+            <Border Grid.Column="1" Style="{StaticResource Panel}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="运行状态" />
+
+                        <Grid Margin="0,0,0,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="服务" />
+                            <TextBlock Grid.Column="1" x:Name="TxtStatus" Style="{StaticResource FieldValue}"
+                                       FontSize="15" FontWeight="SemiBold" Text="未启动" />
+                            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                <Button x:Name="BtnToggle" Style="{StaticResource ActionButton}"
+                                        Content="启动服务" Click="OnToggleServerClick" />
+                                <Button x:Name="BtnReset" Style="{StaticResource ActionButton}"
+                                        Content="解除绑定并重置" Margin="0" Click="OnResetClick" />
+                            </StackPanel>
+                        </Grid>
+
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="本机 IP" />
+                            <ComboBox Grid.Column="1" x:Name="CmbAddress" Height="28"
+                                      SelectionChanged="OnAddressChanged" />
+                            <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0">
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="端口" />
+                                <TextBox x:Name="TxtPort" Width="72" Height="28" Padding="6,4"
+                                         Background="#FF1B1C22" Foreground="#FFE8E8EE"
+                                         BorderBrush="{StaticResource PanelBorderBrush}"
+                                         VerticalContentAlignment="Center" Text="8443" />
+                                <Button x:Name="BtnApplyPort" Style="{StaticResource ActionButton}"
+                                        Content="重启服务" Margin="8,0,0,0" Click="OnApplyPortClick" />
+                            </StackPanel>
+                        </Grid>
+
+                        <Separator Margin="0,14,0,14" Background="{StaticResource PanelBorderBrush}" />
+
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="绑定 IP" />
+                            <TextBlock Grid.Column="1" x:Name="TxtBound" Style="{StaticResource FieldValue}" Text="—" />
+                        </Grid>
+
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="已连接设备" />
+                            <TextBlock Grid.Column="1" x:Name="TxtClient" Style="{StaticResource FieldValue}" Text="—" />
+                        </Grid>
+
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="封禁 IP" />
+                            <TextBlock Grid.Column="1" x:Name="TxtBanned" Style="{StaticResource FieldValue}" Text="无" />
+                        </Grid>
+
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="接收目录" />
+                            <TextBlock Grid.Column="1" x:Name="TxtDownload" Style="{StaticResource FieldValue}" Text="—" />
+                            <Button Grid.Column="2" x:Name="BtnOpenDownload" Style="{StaticResource ActionButton}"
+                                    Content="打开" MinWidth="64" Margin="8,0,0,0" Click="OnOpenDownloadClick" />
+                        </Grid>
+
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="证书指纹" />
+                            <TextBlock Grid.Column="1" x:Name="TxtFingerprint" Style="{StaticResource FieldValue}"
+                                       FontFamily="Consolas" FontSize="11" Text="—" />
+                            <Button Grid.Column="2" x:Name="BtnCopyFingerprint" Style="{StaticResource ActionButton}"
+                                    Content="复制" MinWidth="64" Margin="8,0,0,0" Click="OnCopyFingerprintClick" />
+                        </Grid>
+
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="指令计数" />
+                            <TextBlock Grid.Column="1" x:Name="TxtCounters" Style="{StaticResource FieldValue}" Text="移动 0 · 点击 0 · 滚轮 0 · 复位 0" />
+                        </Grid>
+
+                        <Separator Margin="0,14,0,14" Background="{StaticResource PanelBorderBrush}" />
+
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="双向文件传输" />
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="BtnSendFile" Style="{StaticResource ActionButton}"
+                                    Content="发送文件到手机" MinWidth="140" Click="OnSendFileClick" />
+                            <Button x:Name="BtnRefreshToken" Style="{StaticResource ActionButton}"
+                                    Content="刷新二维码" Click="OnRefreshTokenClick" />
+                        </StackPanel>
+                        <ProgressBar x:Name="SendProgress" Height="8" Margin="0,12,0,4"
+                                     Minimum="0" Maximum="100" Value="0" />
+                        <TextBlock x:Name="TxtSendStatus" Style="{StaticResource FieldValue}"
+                                   FontSize="12" Text="尚未发送文件" TextWrapping="Wrap" />
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+
+        <!-- Log -->
+        <Border Grid.Row="2" Style="{StaticResource Panel}" Margin="0,14,0,0">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Top" Style="{StaticResource SectionTitle}" Text="事件日志" />
+                <ListBox x:Name="LogList" Background="#FF1B1C22" BorderThickness="0"
+                         Foreground="#FFCFD3E0" FontFamily="Consolas" FontSize="12"
+                         ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding}" TextWrapping="NoWrap" />
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>

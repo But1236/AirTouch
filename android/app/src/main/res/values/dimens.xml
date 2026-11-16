@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 间距（dp） -->
+    <dimen name="at_space_xs">4dp</dimen>
+    <dimen name="at_space_s">8dp</dimen>
+    <dimen name="at_space_m">12dp</dimen>
+    <dimen name="at_space_l">16dp</dimen>
+    <dimen name="at_space_xl">24dp</dimen>
+
+    <dimen name="at_text_title">20sp</dimen>
+    <dimen name="at_text_body">14sp</dimen>
+    <dimen name="at_text_small">12sp</dimen>
+
+    <dimen name="at_touchpad_min_height">240dp</dimen>
+    <dimen name="at_button_min_height">48dp</dimen>
+    <dimen name="at_toolbar_button_min_height">44dp</dimen>
+    <dimen name="at_reset_button_size">72dp</dimen>
+    <dimen name="at_corner_radius">10dp</dimen>
+</resources>

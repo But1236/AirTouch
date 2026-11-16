@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 主题色：深色触摸风格 -->
+    <color name="at_bg">#FF101216</color>
+    <color name="at_surface">#FF1B1F26</color>
+    <color name="at_surface_high">#FF262C35</color>
+    <color name="at_primary">#FF4C8DFF</color>
+    <color name="at_on_primary">#FFFFFFFF</color>
+    <color name="at_secondary">#FF3DDC97</color>
+    <color name="at_text">#FFECECEC</color>
+    <color name="at_text_dim">#FF9AA3AF</color>
+    <color name="at_error">#FFFF6B6B</color>
+    <color name="at_grid_line">#22FFFFFF</color>
+    <color name="at_ripple">#33FFFFFF</color>
+    <color name="at_button_stroke">#FF3A424E</color>
+</resources>

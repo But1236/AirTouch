@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/at_bg">
+
+    <TextView
+        android:id="@+id/status_line"
+        style="@style/Widget.AirTouch.Label"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="@color/at_surface"
+        android:padding="@dimen/at_space_s"
+        android:text="@string/control_status_idle"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <com.google.android.material.tabs.TabLayout
+        android:id="@+id/tab_layout"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="@color/at_surface"
+        app:tabGravity="fill"
+        app:tabMode="fixed"
+        app:tabTextColor="@color/at_text_dim"
+        app:tabSelectedTextColor="@color/at_text"
+        app:tabIndicatorColor="@color/at_primary"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/status_line" />
+
+    <FrameLayout
+        android:id="@+id/fragment_container"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_margin="@dimen/at_space_s"
+        app:layout_constraintBottom_toTopOf="@id/file_status"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tab_layout" />
+
+    <TextView
+        android:id="@+id/file_status"
+        style="@style/Widget.AirTouch.Label"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="@color/at_surface"
+        android:paddingStart="@dimen/at_space_s"
+        android:paddingTop="@dimen/at_space_xs"
+        android:paddingEnd="@dimen/at_space_s"
+        android:paddingBottom="@dimen/at_space_xs"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@id/toolbar"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <LinearLayout
+        android:id="@+id/toolbar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="@color/at_surface"
+        android:orientation="vertical"
+        android:padding="@dimen/at_space_s"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/button_left_click"
+                style="@style/Widget.AirTouch.ToolbarButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/control_btn_left" />
+
+            <Button
+                android:id="@+id/button_right_click"
+                style="@style/Widget.AirTouch.ToolbarButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/at_space_s"
+                android:layout_weight="1"
+                android:text="@string/control_btn_right" />
+
+            <Button
+                android:id="@+id/button_scroll_mode"
+                style="@style/Widget.AirTouch.ToolbarButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/at_space_s"
+                android:layout_weight="1"
+                android:text="@string/control_btn_scroll_mode" />
+
+            <Button
+                android:id="@+id/button_reset"
+                style="@style/Widget.AirTouch.ToolbarButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/at_space_s"
+                android:layout_weight="1"
+                android:text="@string/control_btn_reset" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/at_space_s"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/button_send_file"
+                style="@style/Widget.AirTouch.ToolbarButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/control_btn_send_file" />
+
+            <Button
+                android:id="@+id/button_disconnect"
+                style="@style/Widget.AirTouch.ToolbarButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/at_space_s"
+                android:layout_weight="1"
+                android:text="@string/control_btn_disconnect" />
+        </LinearLayout>
+    </LinearLayout>
+</androidx.constraintlayout.widget.ConstraintLayout>

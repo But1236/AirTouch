@@ -1,0 +1,62 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AirTouch.Core", "AirTouch.Core\AirTouch.Core.csproj", "{C28965B7-8F5B-4E56-B374-4E3E7515E24B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AirTouch.Server", "AirTouch.Server\AirTouch.Server.csproj", "{9D308B1A-F90B-438C-8769-C894E943B429}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AirTouch.SmokeTest", "AirTouch.SmokeTest\AirTouch.SmokeTest.csproj", "{BA47017B-D63B-44C8-9082-F9BCA6888CAA}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C28965B7-8F5B-4E56-B374-4E3E7515E24B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C28965B7-8F5B-4E56-B374-4E3E7515E24B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C28965B7-8F5B-4E56-B374-4E3E7515E24B}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C28965B7-8F5B-4E56-B374-4E3E7515E24B}.Debug|x64.Build.0 = Debug|Any CPU
+		{C28965B7-8F5B-4E56-B374-4E3E7515E24B}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C28965B7-8F5B-4E56-B374-4E3E7515E24B}.Debug|x86.Build.0 = Debug|Any CPU
+		{C28965B7-8F5B-4E56-B374-4E3E7515E24B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C28965B7-8F5B-4E56-B374-4E3E7515E24B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C28965B7-8F5B-4E56-B374-4E3E7515E24B}.Release|x64.ActiveCfg = Release|Any CPU
+		{C28965B7-8F5B-4E56-B374-4E3E7515E24B}.Release|x64.Build.0 = Release|Any CPU
+		{C28965B7-8F5B-4E56-B374-4E3E7515E24B}.Release|x86.ActiveCfg = Release|Any CPU
+		{C28965B7-8F5B-4E56-B374-4E3E7515E24B}.Release|x86.Build.0 = Release|Any CPU
+		{9D308B1A-F90B-438C-8769-C894E943B429}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9D308B1A-F90B-438C-8769-C894E943B429}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9D308B1A-F90B-438C-8769-C894E943B429}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{9D308B1A-F90B-438C-8769-C894E943B429}.Debug|x64.Build.0 = Debug|Any CPU
+		{9D308B1A-F90B-438C-8769-C894E943B429}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{9D308B1A-F90B-438C-8769-C894E943B429}.Debug|x86.Build.0 = Debug|Any CPU
+		{9D308B1A-F90B-438C-8769-C894E943B429}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9D308B1A-F90B-438C-8769-C894E943B429}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9D308B1A-F90B-438C-8769-C894E943B429}.Release|x64.ActiveCfg = Release|Any CPU
+		{9D308B1A-F90B-438C-8769-C894E943B429}.Release|x64.Build.0 = Release|Any CPU
+		{9D308B1A-F90B-438C-8769-C894E943B429}.Release|x86.ActiveCfg = Release|Any CPU
+		{9D308B1A-F90B-438C-8769-C894E943B429}.Release|x86.Build.0 = Release|Any CPU
+		{BA47017B-D63B-44C8-9082-F9BCA6888CAA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BA47017B-D63B-44C8-9082-F9BCA6888CAA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BA47017B-D63B-44C8-9082-F9BCA6888CAA}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{BA47017B-D63B-44C8-9082-F9BCA6888CAA}.Debug|x64.Build.0 = Debug|Any CPU
+		{BA47017B-D63B-44C8-9082-F9BCA6888CAA}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{BA47017B-D63B-44C8-9082-F9BCA6888CAA}.Debug|x86.Build.0 = Debug|Any CPU
+		{BA47017B-D63B-44C8-9082-F9BCA6888CAA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BA47017B-D63B-44C8-9082-F9BCA6888CAA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BA47017B-D63B-44C8-9082-F9BCA6888CAA}.Release|x64.ActiveCfg = Release|Any CPU
+		{BA47017B-D63B-44C8-9082-F9BCA6888CAA}.Release|x64.Build.0 = Release|Any CPU
+		{BA47017B-D63B-44C8-9082-F9BCA6888CAA}.Release|x86.ActiveCfg = Release|Any CPU
+		{BA47017B-D63B-44C8-9082-F9BCA6888CAA}.Release|x86.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

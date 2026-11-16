@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <!-- Do not enable WinForms here: it would make Application/MessageBox/Timer ambiguous with WPF. -->
+    <UseWindowsForms>false</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>AirTouch.Server</RootNamespace>
+    <AssemblyName>AirTouch.Server</AssemblyName>
+    <RollForward>LatestMajor</RollForward>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Product>AirTouch Server</Product>
+    <AssemblyTitle>AirTouch 手机遥控服务端</AssemblyTitle>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AirTouch.Core\AirTouch.Core.csproj" />
+  </ItemGroup>
+
+</Project>

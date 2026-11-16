@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 通用 -->
+    <string name="app_name">AirTouch</string>
+
+    <!-- 配对界面 -->
+    <string name="pairing_title">扫描电脑上的二维码</string>
+    <string name="pairing_hint">在电脑端 AirTouch 服务程序窗口中扫码，手机与电脑需处于同一局域网。</string>
+    <string name="pairing_manual_input">手动输入地址</string>
+    <string name="pairing_reset_pin">重置证书信任</string>
+    <string name="pairing_last_connected">上次连接：%1$s</string>
+    <string name="pairing_last_connected_none">上次连接：无</string>
+    <string name="pairing_invalid_qr">二维码内容不是有效的 AirTouch 地址</string>
+    <string name="pairing_pin_reset_done">已清除全部证书指纹，请重新扫码配对</string>
+    <string name="pairing_pin_reset_empty">当前没有保存的证书指纹</string>
+
+    <!-- 相机权限 -->
+    <string name="perm_camera_rationale">需要相机权限才能扫描电脑上的二维码。</string>
+    <string name="perm_camera_denied">相机权限被拒绝，无法扫码。你可以重试授权，或前往系统设置手动开启。</string>
+    <string name="perm_camera_retry">重试授权</string>
+    <string name="perm_camera_open_settings">打开系统设置</string>
+    <string name="perm_camera_open_failed">无法打开系统设置，请手动进入「设置 → 应用 → AirTouch → 权限」开启相机。</string>
+
+    <!-- 手动输入对话框 -->
+    <string name="manual_dialog_title">手动输入服务器地址</string>
+    <string name="manual_host_label">主机地址（IP 或域名）</string>
+    <string name="manual_port_label">端口（默认 8443）</string>
+    <string name="manual_token_label">配对令牌 token</string>
+    <string name="manual_connect">连接</string>
+    <string name="manual_cancel">取消</string>
+    <string name="manual_host_required">请填写主机地址</string>
+    <string name="manual_token_required">请填写配对令牌</string>
+    <string name="manual_port_invalid">端口需为 1-65535 之间的整数</string>
+
+    <!-- 控制界面 -->
+    <string name="control_tab_airmouse">空中鼠标</string>
+    <string name="control_tab_touchpad">触摸板</string>
+    <string name="control_btn_left">左键</string>
+    <string name="control_btn_right">右键</string>
+    <string name="control_btn_scroll_mode">滚轮模式</string>
+    <string name="control_btn_reset">复位</string>
+    <string name="control_btn_send_file">发送文件</string>
+    <string name="control_btn_disconnect">断开</string>
+    <string name="control_status_idle">未连接</string>
+    <string name="control_status_connecting">正在连接…</string>
+    <string name="control_status_connected">已连接</string>
+    <string name="control_status_closed">连接已关闭</string>
+    <string name="control_status_failed">连接失败</string>
+    <string name="control_status_detail">%1$s · %2$s</string>
+    <string name="control_server_version">服务端 %1$s</string>
+    <string name="control_disconnected_toast">连接已断开：%1$s</string>
+    <string name="control_connect_failed_toast">连接失败：%1$s</string>
+    <string name="control_scroll_mode_on">滚轮模式：开（单指上下滑动 = 滚轮）</string>
+    <string name="control_scroll_mode_off">滚轮模式：关（单指拖动 = 移动光标）</string>
+    <string name="control_welcome_error">服务端拒绝了本次连接：%1$s</string>
+
+    <!-- 服务端 error{code,message}（协议 §1.2）：按 code 给出可操作的中文提示，避免用户以为只是「掉线」 -->
+    <string name="control_server_error_token_expired">配对已失效：token 是一次性的，请回到「扫码连接」重新扫码</string>
+    <string name="control_server_error_token_invalid">配对信息不正确，请回到「扫码连接」重新扫码</string>
+    <string name="control_server_error_banned">本机已被服务器封禁，请在电脑端点「解除绑定并重置」</string>
+    <string name="control_server_error_ip_locked">电脑已绑定到其他设备，请在电脑端点「解除绑定并重置」</string>
+    <string name="control_server_error_rate_limited">尝试过于频繁，请稍等几秒再试</string>
+    <string name="control_server_error_busy">电脑已有一台设备在连接中（关闭码 1013），请稍后再试</string>
+
+    <!-- 触摸板 -->
+    <string name="touchpad_sensitivity">灵敏度</string>
+    <string name="touchpad_sensitivity_value">%1$.1fx</string>
+    <string name="touchpad_hint_move">单指拖动移动光标 · 单指点击 = 左键 · 双指拖动滚动 · 双指点击 = 右键</string>
+    <string name="touchpad_hint_scroll">滚轮模式：单指上下滑动滚动 · 双指点击 = 右键</string>
+
+    <!-- 空中鼠标 -->
+    <string name="airmouse_sensitivity">灵敏度</string>
+    <string name="airmouse_sensitivity_value">%1$.2fx</string>
+    <string name="airmouse_invert_x">反向 X</string>
+    <string name="airmouse_invert_y">反向 Y</string>
+    <string name="airmouse_reset">复位</string>
+    <string name="airmouse_hint">握持手机并缓慢倾斜/转动，光标随之移动。停止移动即停止发送。</string>
+    <string name="airmouse_no_sensor">未检测到陀螺仪传感器，空中鼠标不可用。该设备可能没有陀螺仪硬件。</string>
+    <string name="airmouse_using_uncalibrated">未检测到标准陀螺仪，已降级使用未校准陀螺仪（TYPE_GYROSCOPE_UNCALIBRATED）。</string>
+    <string name="airmouse_status_running">陀螺仪工作中</string>
+    <string name="airmouse_status_paused">已暂停（界面不可见）</string>
+
+    <!-- 文件传输 -->
+    <string name="file_send_start">开始发送：%1$s（%2$s）</string>
+    <string name="file_send_progress">发送中 %1$d%%（%2$s / %3$s）</string>
+    <string name="file_send_done">发送完成：%1$s</string>
+    <string name="file_send_failed">发送失败：%1$s</string>
+    <string name="file_send_unknown_size">无法读取文件大小，将尽力发送</string>
+    <string name="file_send_busy">已有文件正在传输，请稍候</string>
+    <string name="file_receive_start">正在接收：%1$s（%2$s）</string>
+    <string name="file_receive_done">已保存到下载目录：%1$s</string>
+    <string name="file_receive_failed">接收失败：%1$s</string>
+    <string name="file_ack_ok">服务端已保存：%1$s（%2$s）</string>
+    <string name="file_ack_error">服务端拒收：%1$s</string>
+
+    <!-- 单位 -->
+    <string name="unit_bytes">%1$d B</string>
+    <string name="unit_kib">%1$.1f KiB</string>
+    <string name="unit_mib">%1$.2f MiB</string>
+    <string name="unit_gib">%1$.2f GiB</string>
+    <string name="unit_unknown">未知大小</string>
+</resources>

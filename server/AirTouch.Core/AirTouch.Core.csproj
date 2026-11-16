@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>AirTouch.Core</RootNamespace>
+    <AssemblyName>AirTouch.Core</AssemblyName>
+    <!-- No .NET 8 runtime is installed on the machine this was scaffolded on; the app targets
+         .NET 8 as specified but is allowed to run on a newer installed runtime. -->
+    <RollForward>LatestMajor</RollForward>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Fleck" Version="1.2.0" />
+    <PackageReference Include="QRCoder" Version="1.6.0" />
+    <!-- Used only to DPAPI-protect the local self-signed certificate password. -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

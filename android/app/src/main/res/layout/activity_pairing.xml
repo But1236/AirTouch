@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/at_bg">
+
+    <FrameLayout
+        android:id="@+id/preview_container"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@color/at_surface"
+        app:layout_constraintBottom_toTopOf="@id/panel"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <androidx.camera.view.PreviewView
+            android:id="@+id/preview_view"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            app:scaleType="fillCenter" />
+
+        <TextView
+            android:id="@+id/scan_hint"
+            style="@style/Widget.AirTouch.Label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="@dimen/at_space_l"
+            android:background="@color/at_surface"
+            android:padding="@dimen/at_space_s"
+            android:text="@string/pairing_hint" />
+
+        <LinearLayout
+            android:id="@+id/permission_panel"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/at_bg"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="@dimen/at_space_xl"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/permission_message"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="@string/perm_camera_rationale"
+                android:textColor="@color/at_text"
+                android:textSize="@dimen/at_text_body" />
+
+            <Button
+                android:id="@+id/button_retry_permission"
+                style="@style/Widget.AirTouch.ActionButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/at_space_l"
+                android:paddingStart="@dimen/at_space_l"
+                android:paddingEnd="@dimen/at_space_l"
+                android:text="@string/perm_camera_retry" />
+
+            <Button
+                android:id="@+id/button_open_settings"
+                style="@style/Widget.AirTouch.ToolbarButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/at_space_s"
+                android:paddingStart="@dimen/at_space_l"
+                android:paddingEnd="@dimen/at_space_l"
+                android:text="@string/perm_camera_open_settings" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <LinearLayout
+        android:id="@+id/panel"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="@color/at_surface"
+        android:orientation="vertical"
+        android:padding="@dimen/at_space_l"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <TextView
+            android:id="@+id/title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/pairing_title"
+            android:textColor="@color/at_text"
+            android:textSize="@dimen/at_text_title" />
+
+        <TextView
+            android:id="@+id/last_connected"
+            style="@style/Widget.AirTouch.Label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/at_space_xs"
+            android:text="@string/pairing_last_connected_none" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/at_space_m"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/button_manual_input"
+                style="@style/Widget.AirTouch.ActionButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/pairing_manual_input" />
+
+            <Button
+                android:id="@+id/button_reset_pin"
+                style="@style/Widget.AirTouch.ToolbarButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/at_space_s"
+                android:layout_weight="1"
+                android:text="@string/pairing_reset_pin" />
+        </LinearLayout>
+    </LinearLayout>
+</androidx.constraintlayout.widget.ConstraintLayout>

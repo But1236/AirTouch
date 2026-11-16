@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      主题选择说明：
+      使用 Material3（material:1.12.0 提供 Theme.Material3.*），但下面把关键颜色属性
+      全部显式覆盖为 @color/... 常量，因此不依赖任何生成的 Material3 调色板资源
+      （如 md_theme_* 等），把编译期资源缺失的风险降到最低。
+      同时覆盖 Material 组件依赖的 colorPrimary / colorOnPrimary / colorSurface / colorOnSurface。
+
+      注意：这里只写 android:colorBackground，不写不带 android: 前缀的 colorBackground。
+      Material 组件库定义了 colorOnBackground 与 colorBackgroundFloating，但**没有**定义
+      colorBackground（框架里已有 android:colorBackground），写非 android: 版本会导致
+      aapt2 链接失败：attr/colorBackground not found。
+    -->
+    <style name="Theme.AirTouch" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/at_primary</item>
+        <item name="colorOnPrimary">@color/at_on_primary</item>
+        <item name="colorPrimaryContainer">@color/at_primary</item>
+        <item name="colorOnPrimaryContainer">@color/at_on_primary</item>
+        <item name="colorSecondary">@color/at_secondary</item>
+        <item name="colorOnSecondary">@color/at_bg</item>
+        <item name="colorSurface">@color/at_surface</item>
+        <item name="colorOnSurface">@color/at_text</item>
+        <item name="colorSurfaceVariant">@color/at_surface_high</item>
+        <item name="colorOnSurfaceVariant">@color/at_text_dim</item>
+        <item name="colorOnBackground">@color/at_text</item>
+        <item name="colorError">@color/at_error</item>
+        <item name="colorOnError">@color/at_on_primary</item>
+        <item name="colorOutline">@color/at_button_stroke</item>
+        <item name="android:colorBackground">@color/at_bg</item>
+
+        <!-- 强制深色，保证自定义 View 的配色一致 -->
+        <item name="isLightTheme">false</item>
+        <item name="android:windowBackground">@color/at_bg</item>
+        <item name="android:textColorPrimary">@color/at_text</item>
+        <item name="android:textColorSecondary">@color/at_text_dim</item>
+        <item name="android:statusBarColor">@color/at_bg</item>
+        <item name="android:navigationBarColor">@color/at_bg</item>
+    </style>
+
+    <!--
+      控件样式说明：全部使用 android.widget.Button / TextView / SeekBar 等平台控件，
+      背景用自定义 shape drawable，不依赖 Material 组件库中不确定存在的 style 资源
+      （MaterialButton 会通过 ShapeAppearance 覆盖 android:background，因此这里刻意不用它）。
+
+      关于 parent=""（重要，不要删）：
+      Android 规定 <style name="A.B.C"> 在不写 parent 时会**隐式继承**点名最后一个点之前的部分，
+      即上面的 A.B。这里的名字是 Widget.AirTouch.XXX，如果不写 parent，aapt2 会去找
+      "Widget.AirTouch" 这个并不存在的样式，链接阶段直接报：
+          error: resource style/Widget.AirTouch ... not found
+      显式写 parent="" 表示「确实没有父样式」，从而关闭这条隐式推断。
+      这五个样式彼此独立、也没有共同的基类属性，所以 parent="" 是它们的准确意图。
+    -->
+    <style name="Widget.AirTouch.ToolbarButton" parent="">
+        <item name="android:minHeight">@dimen/at_toolbar_button_min_height</item>
+        <item name="android:textSize">@dimen/at_text_small</item>
+        <item name="android:textColor">@color/at_text</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:paddingStart">@dimen/at_space_xs</item>
+        <item name="android:paddingEnd">@dimen/at_space_xs</item>
+        <item name="android:background">@drawable/bg_at_button</item>
+    </style>
+
+    <style name="Widget.AirTouch.ActionButton" parent="">
+        <item name="android:minHeight">@dimen/at_button_min_height</item>
+        <item name="android:textSize">@dimen/at_text_body</item>
+        <item name="android:textColor">@color/at_on_primary</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:background">@drawable/bg_at_button_primary</item>
+    </style>
+
+    <style name="Widget.AirTouch.FloatingReset" parent="">
+        <item name="android:textColor">@color/at_on_primary</item>
+        <item name="android:textSize">@dimen/at_text_body</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:background">@drawable/bg_at_reset</item>
+        <item name="android:elevation">6dp</item>
+    </style>
+
+    <style name="Widget.AirTouch.Label" parent="">
+        <item name="android:textColor">@color/at_text_dim</item>
+        <item name="android:textSize">@dimen/at_text_small</item>
+    </style>
+
+    <style name="Widget.AirTouch.Card" parent="">
+        <item name="android:background">@drawable/bg_at_card</item>
+        <item name="android:padding">@dimen/at_space_m</item>
+    </style>
+</resources>

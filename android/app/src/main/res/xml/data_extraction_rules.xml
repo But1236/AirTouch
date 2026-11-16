@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ 备份/迁移规则。
+  device-transfer 保留（同型号换机时大概率仍是同一台电脑，指纹可能仍有效，但为安全起见同样排除）；
+  cloud-backup 排除证书指纹与 token 存储。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude
+            domain="sharedpref"
+            path="airtouch_settings.xml" />
+        <exclude
+            domain="file"
+            path="airtouch_tmp" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude
+            domain="sharedpref"
+            path="airtouch_settings.xml" />
+        <exclude
+            domain="file"
+            path="airtouch_tmp" />
+    </device-transfer>
+</data-extraction-rules>

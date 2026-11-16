@@ -14,13 +14,6 @@ public sealed class AirTouchOptions
     public const string PortEnvVar = "AIRTOUCH_PORT";
     public const string AddressEnvVar = "AIRTOUCH_ADDRESS";
 
-    /// <summary>
-    /// Diagnostics-only escape hatch that turns the listener into a plain <c>ws://</c> endpoint.
-    /// Set <c>AIRTOUCH_INSECURE_NO_TLS=1</c> only to debug a machine whose Schannel stack is broken;
-    /// it is deliberately not reachable from the UI and logs a loud warning when active.
-    /// </summary>
-    public const string InsecureNoTlsEnvVar = "AIRTOUCH_INSECURE_NO_TLS";
-
     /// <summary>Directory holding the persisted self-signed certificate and logs.</summary>
     public required string DataDirectory { get; init; }
 
@@ -61,8 +54,10 @@ public sealed class AirTouchOptions
     public string? AdvertisedAddress { get; init; }
 
     /// <summary>
-    /// True (the default, and the only supported production mode) serves <c>wss://</c> with the
-    /// self-signed certificate. False serves plain <c>ws://</c> and must never be used on a LAN.
+    /// True (the default and the only supported production mode) serves <c>wss://</c> with the
+    /// self-signed certificate. Setting it to false serves plain <c>ws://</c>; that exists only as a
+    /// test seam for hosts that cannot serve TLS, is not reachable from the UI or from any
+    /// environment variable, and must never be used on a LAN.
     /// </summary>
     public bool UseTls { get; init; } = true;
 
@@ -99,10 +94,6 @@ public sealed class AirTouchOptions
             DownloadDirectory = Path.GetFullPath(downloadDir),
             Port = port,
             AdvertisedAddress = string.IsNullOrWhiteSpace(address) ? null : address,
-            UseTls = !string.Equals(
-                Environment.GetEnvironmentVariable(InsecureNoTlsEnvVar),
-                "1",
-                StringComparison.Ordinal),
         };
     }
 }

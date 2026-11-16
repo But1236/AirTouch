@@ -83,7 +83,8 @@ Tool 说明：
    在普通桌面会话（或管理员）下重新运行即为 120/0/0。
 2. **classic `.sln` 无法在本机 SDK 上还原**（`_FilterRestoreGraphProjectInputItems` / `MSB4276`），
    与代码无关；请用 `tools/build.ps1`。`server/AirTouch.sln` 仅供 Visual Studio 使用。
-3. **NuGet 出网不可用**（Schannel `SEC_E_NO_CREDENTIALS`），依赖已离线内置，见 README §7。
+3. **沙箱内 NuGet 出网不可用**（受限令牌下 Schannel `SEC_E_NO_CREDENTIALS`；普通桌面会话不受
+   影响），依赖已离线内置，见 README §7。
 4. **.NET SDK 升级会抬高 net8.0 targeting pack 的补丁版本**：本机 SDK 从 10.0.114 升到 10.0.115 后，
    构建开始索要 `Microsoft.NETCore.App.Ref 8.0.34`（离线源里只有 8.0.33）并报 `NU1102`。
    重新执行 `node tools/fetch-nuget.mjs --out .nuget-local` 会自动取 8.0. 波段里最新的那几个包即可修复。
@@ -92,9 +93,12 @@ Tool 说明：
 
 ## 4. 未验证的部分（务必知悉）
 
-1. **Android 工程从未编译或运行过**——本机没有 JDK、没有 Android SDK。全部结论来自逐行审阅
-   （API 是否存在、资源与 ViewBinding 引用、JSON 字段、线程使用）。第一次
-   `gradlew assembleDebug` 才是真正的检验；风险点列在 `android/README.md`。
+1. **Android 工程能编译了，但从未在真机上运行过**。后来把 JDK 17 与 Android SDK 下载到了
+   git 忽略的 `.jdk/`、`.android-sdk/` 目录（`android/local.properties` 的 `sdk.dir` 指向后者），
+   `gradlew assembleDebug` 已成功执行，产物
+   `android/app/build/outputs/apk/debug/app-debug.apk`（7.4 MB）存在。
+   仍未验证的是真机运行时行为：相机扫码、陀螺仪、触摸手势、配对流程都从未跑过。原先逐行审阅
+   （API 是否存在、资源与 ViewBinding 引用、JSON 字段、线程使用）的残余风险仍列在 `android/README.md`。
 2. **没有真机 ↔ PC 的实机会话**：所有端到端连接都由本机自动化客户端完成（回环 + 一个用于 IP 绑定
    测试的真实第二来源地址）。相机扫码、陀螺仪、触摸手势需要人工验证。
 3. **未在真实校园网环境测试**（AP 隔离、跨网段、防火墙策略）。首次运行需要在 Windows 防火墙弹窗中

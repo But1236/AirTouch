@@ -85,8 +85,10 @@ gradlew.bat assembleDebug               # needs JDK 17 and Android SDK 34
 ```
 
 Create `android/local.properties` with `sdk.dir=C\:\\Users\\<you>\\AppData\\Local\\Android\\Sdk`,
-or simply open the `android/` folder in Android Studio and press Run. The Gradle wrapper (8.7,
-including `gradle-wrapper.jar`) is committed, so no Gradle installation is required.
+or simply open the `android/` folder in Android Studio and press Run. In this checkout that file
+already exists and points `sdk.dir` at the git-ignored `.android-sdk/`, with a JDK 17 in `.jdk/` to
+use as `JAVA_HOME`. The Gradle wrapper (8.7, including `gradle-wrapper.jar`) is committed, so no
+Gradle installation is required.
 APK output: `android/app/build/outputs/apk/debug/app-debug.apk`.
 
 ### Pairing
@@ -149,21 +151,25 @@ and only renamed into place when complete.
 | Disk exhaustion | 512 MiB per-file limit, disk-space pre-check before accepting, overrun rejected |
 | Traffic analysis / replay of controls | Every message is scoped to the authenticated socket; the guard rotates the token on disconnect while keeping the IP binding |
 
-Diagnostics-only escape hatch: `AIRTOUCH_INSECURE_NO_TLS=1` starts a **plaintext `ws://`** listener
-and logs a loud warning. Never use it on a real network — it exists so a machine with a broken
-Schannel stack can still be probed on loopback.
+There is no plaintext mode. `wss://` is the only production transport, and the listener refuses to
+start rather than silently serving unencrypted traffic. (The self-test harness can still drive the
+protocol over a loopback `ws://` socket when the host cannot serve TLS, but that switch lives in
+code only — it is not reachable from the UI or from any environment variable.)
 
 Configuration overrides: `AIRTOUCH_PORT`, `AIRTOUCH_ADDRESS`, `AIRTOUCH_DATA_DIR`,
-`AIRTOUCH_DOWNLOAD_DIR`, `AIRTOUCH_INSECURE_NO_TLS`. Defaults: data dir
-`%LOCALAPPDATA%\AirTouch`, downloads `%USERPROFILE%\Downloads`.
+`AIRTOUCH_DOWNLOAD_DIR`. Defaults: data dir `%LOCALAPPDATA%\AirTouch`, downloads
+`%USERPROFILE%\Downloads`.
 
 ---
 
 ## 7. Building offline (why this repo looks unusual)
 
-This machine's Schannel cannot acquire TLS credentials for outbound NuGet traffic
-(`SEC_E_NO_CREDENTIALS`, "安全包中没有可用的凭证"), so `dotnet restore` never reaches nuget.org.
-Everything is therefore vendored:
+Agent sessions that work on this repo run inside a sandbox that strips the process token down to a
+single privilege (`SeChangeNotifyPrivilege`). Schannel cannot create a client credential under such
+a token, so `dotnet restore`, `curl` and PowerShell's HTTPS requests all fail there with
+`SEC_E_NO_CREDENTIALS` ("安全包中没有可用的凭证"). **This is the sandbox, not your desktop** — a
+normal desktop session has working outbound TLS and `dotnet restore` reaches nuget.org as usual.
+The offline machinery below exists so that a sandboxed agent can still restore and build:
 
 * `tools/fetch-nuget.mjs` downloads `.nupkg` files with **Node's OpenSSL** stack into `.nuget-local`
   (Fleck 1.2.0, QRCoder 1.6.0, the .NET 8 targeting packs, …). Run it as
@@ -188,7 +194,8 @@ project directly and always works.
 
 **"无法启用 wss：证书私钥只能以内存临时密钥加载…"** — Schannel refuses to serve TLS from an
 in-memory key, and Windows denied writing the certificate's private key into the user's key
-container (`%APPDATA%\Microsoft\Crypto`). Run the app in a normal desktop session (or as
+container (`%APPDATA%\Microsoft\Crypto`). This is what happens inside a confined sandbox (the agent
+environment), not on a normal desktop: run the app in a normal desktop session (or as
 administrator), or delete `airtouch-server.pfx` in the data directory and retry. The app fails
 loudly instead of silently serving plaintext.
 
@@ -222,12 +229,16 @@ wire; hostile filenames end to end; byte-exact file transfer both directions; se
 pong keepalive; real `SendInput` mouse movement, clicks, wheel and `SetCursorPos` centring; and the
 WPF window starting, listening and rendering its QR code.
 
-**Not verified here — please treat as "reviewed, never compiled":**
+**Not verified here — please treat with care:**
 
-1. **The Android app has never been compiled or run** — this machine has no JDK and no Android SDK.
-   It was written against the protocol document and reviewed line by line (API existence, resource
-   and view-binding references, JSON field names, thread usage), but the first `assembleDebug` on a
-   real machine is the moment of truth. The review's residual risks are listed in `android/README.md`.
+1. **The Android app now compiles, but has never run on a device.** A JDK 17 and an Android SDK were
+   later downloaded into the git-ignored `.jdk/` and `.android-sdk/` folders (`android/local.properties`
+   points `sdk.dir` at the latter), and `assembleDebug` now succeeds —
+   `android/app/build/outputs/apk/debug/app-debug.apk` (7.4 MB) exists. What is still unverified is
+   runtime behaviour on real hardware: camera scanning, the gyroscope, touch gestures and the whole
+   pairing flow have never been exercised. The original line-by-line review (API existence, resource
+   and view-binding references, JSON field names, thread usage) still carries its residual risks,
+   listed in `android/README.md`.
 2. **No real phone ↔ PC session.** Every end-to-end check used automated clients on this machine
    (loopback, and a genuine second source address for the IP-lock test). Camera scanning, the
    gyroscope, and touch gestures need hands-on testing.

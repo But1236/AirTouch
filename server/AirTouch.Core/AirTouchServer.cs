@@ -177,8 +177,7 @@ public sealed class AirTouchServer : IDisposable
                 throw new AirTouchServerException(
                     "无法启用 wss：证书私钥只能以内存临时密钥加载，而 Windows Schannel 不支持临时密钥。\n" +
                     "请用对 %APPDATA%\\Microsoft\\Crypto 有写权限的账户运行本程序（管理员或普通桌面会话均可），" +
-                    "或删除数据目录中的 airtouch-server.pfx 后重试。\n" +
-                    "仅本机排障时可设置环境变量 AIRTOUCH_INSECURE_NO_TLS=1 使用未加密的 ws://（切勿在局域网使用）。");
+                    "或删除数据目录中的 airtouch-server.pfx 后重试。");
             }
 
             listener.Certificate = _certificate.Certificate;
@@ -187,7 +186,9 @@ public sealed class AirTouchServer : IDisposable
         }
         else
         {
-            _log.Error("!!! 已禁用 TLS（AIRTOUCH_INSECURE_NO_TLS=1）：流量未加密，仅限本机排障使用 !!!");
+            // Reachable only from the test harness (see AirTouchOptions.UseTls), never from the UI
+            // or an environment variable. Plaintext is acceptable on a loopback test socket only.
+            _log.Error("!!! 已禁用 TLS：流量未加密，仅供回环测试使用 !!!");
         }
 
         try

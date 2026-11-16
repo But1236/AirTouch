@@ -1,4 +1,6 @@
-// tools/dl.mjs —— 用 Node 自带的 OpenSSL 下载文件，绕开本机坏掉的 Schannel。
+// tools/dl.mjs —— 用 Node 自带的 OpenSSL 下载文件。
+// 沙箱里的进程令牌被限权，Schannel 拿不到客户端凭据（SEC_E_NO_CREDENTIALS），所以 agent 会话
+// 无法用 curl / PowerShell 下载；普通桌面会话并不需要这个脚本。
 // 用法: node tools\dl.mjs <url> <输出文件>
 import fs from 'node:fs';
 import path from 'node:path';

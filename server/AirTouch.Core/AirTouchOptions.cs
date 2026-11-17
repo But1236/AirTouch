@@ -38,6 +38,23 @@ public sealed class AirTouchOptions
     /// <summary>How many consecutive token failures from one IP trigger a permanent ban.</summary>
     public int MaxTokenFailures { get; init; } = 3;
 
+    /// <summary>How many consecutive device-key failures from one IP trigger a permanent ban.</summary>
+    /// <remarks>
+    /// Higher than <see cref="MaxTokenFailures"/> on purpose: a failed key proof can also come from a
+    /// phone with a badly skewed clock or a wiped key store, and those retry in a loop. Soft failures
+    /// (stale timestamp, unknown key) are answered with a clear error code and never counted here.
+    /// </remarks>
+    public int MaxAuthFailures { get; init; } = 5;
+
+    /// <summary>How long an unauthenticated socket may wait for its <c>auth_req</c> before it is closed.</summary>
+    public TimeSpan AuthTimeout { get; init; } = TimeSpan.FromSeconds(12);
+
+    /// <summary>Maximum number of sockets allowed to sit in the unauthenticated state at the same time.</summary>
+    public int MaxPendingSockets { get; init; } = 4;
+
+    /// <summary>Allowed clock difference between the phone and this PC when checking the signed timestamp.</summary>
+    public TimeSpan AuthClockSkew { get; init; } = TimeSpan.FromSeconds(120);
+
     /// <summary>Connection attempts allowed from one IP inside <see cref="RateLimitWindow"/>.</summary>
     public int MaxConnectionAttemptsPerWindow { get; init; } = 20;
 

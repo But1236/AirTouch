@@ -1,7 +1,7 @@
 # Builds the AirTouch Windows projects one by one.
 #
-# Why not `dotnet build server\AirTouch.sln`: on the SDK installation this repo was scaffolded with
-# (10.0.114), classic .sln restore fails inside MSBuild's _FilterRestoreGraphProjectInputItems task
+# Why not `dotnet build server\AirTouch.sln`: on some SDK installations classic .sln restore fails
+# inside MSBuild's _FilterRestoreGraphProjectInputItems task
 # because two SDK components are missing from the installation
 # (Microsoft.NET.SDK.WorkloadAutoImportPropsLocator / WorkloadManifestTargetsLocator). Building each
 # project directly avoids the .sln metaproj entirely, and the .sln is still there for Visual Studio.

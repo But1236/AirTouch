@@ -5,6 +5,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.SeekBar
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import com.airtouch.app.R
 import com.airtouch.app.databinding.FragmentTouchpadBinding
@@ -110,6 +111,7 @@ class TouchpadFragment : Fragment(), TouchpadView.Listener {
 
     fun setScreenVisible(visible: Boolean) {
         screenVisible = visible
+        if (visible) updateModeHint()
     }
 
     /** 由 ControlActivity 的滚轮模式按钮调用（同样会写入 SettingsStore） */
@@ -121,20 +123,21 @@ class TouchpadFragment : Fragment(), TouchpadView.Listener {
     }
 
     // ---------------- TouchpadView.Listener ----------------
+    //
+    // 这里**刻意不做 screenVisible 判断**：本页被 hide() 之后视图是 GONE，根本收不到触摸事件，
+    // 触摸事件本身就是「用户正在这一页操作」的最可靠证据。早期版本额外加了一道 screenVisible
+    // 门禁，一旦某个路径漏了 setScreenVisible(true)（或滚轮模式被别的页打开），
+    // 就会出现「触摸板完全没反应」这种最难排查的现象。
 
     override fun onMove(dx: Int, dy: Int) {
-        // 触摸板不在前台时不发送，避免隐藏页仍然产生输入
-        if (!screenVisible) return
         bridge?.sendMove(dx, dy)
     }
 
     override fun onClick(button: String) {
-        if (!screenVisible) return
         bridge?.sendClick(button)
     }
 
     override fun onScroll(amount: Int) {
-        if (!screenVisible) return
         bridge?.sendScroll(amount)
     }
 
@@ -147,6 +150,14 @@ class TouchpadFragment : Fragment(), TouchpadView.Listener {
     private fun updateModeHint() {
         binding.touchpadHint.setText(
             if (scrollMode) R.string.touchpad_hint_scroll else R.string.touchpad_hint_move
+        )
+        // 滚轮模式开着的时候用主色写提示：早期版本在别的页按了滚轮模式，回到这页只看到
+        // 「拖动没反应」，看不出是滚轮模式在生效。现在状态一眼可见。
+        binding.touchpadHint.setTextColor(
+            ContextCompat.getColor(
+                requireContext(),
+                if (scrollMode) R.color.at_primary else R.color.at_text_dim
+            )
         )
     }
 

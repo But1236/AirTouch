@@ -52,11 +52,11 @@ public static class Program
     /// Checks whether this machine can actually complete a TLS handshake as a client.
     /// </summary>
     /// <remarks>
-    /// Some locked-down environments (including the sandbox this project was scaffolded in) fail at
-    /// Schannel's <c>AcquireCredentialsHandle</c> with <c>SEC_E_NO_CREDENTIALS</c> for *every* outbound
-    /// TLS connection — curl and PowerShell's https requests fail the same way there. The server code
-    /// is unaffected, but the test harness needs to know so it can keep verifying the protocol over a
-    /// plaintext loopback socket instead of reporting a false failure.
+    /// Some locked-down environments fail at Schannel's <c>AcquireCredentialsHandle</c> with
+    /// <c>SEC_E_NO_CREDENTIALS</c> for *every* outbound TLS connection — curl and PowerShell's https
+    /// requests fail the same way there. The server code is unaffected, but the test harness needs to
+    /// know so it can keep verifying the protocol over a plaintext loopback socket instead of
+    /// reporting a false failure.
     /// </remarks>
     private static async Task<bool> ProbeTlsAsync(TestReporter reporter, string workspace)
     {
@@ -173,7 +173,7 @@ public static class Program
 
     private static void RunGuardPolicyTests(TestReporter reporter)
     {
-        reporter.Section("安全策略单元测试（令牌 / IP 绑定 / 防暴破）");
+        reporter.Section("安全策略单元测试（令牌 / 待认证预算 / 防暴破）");
 
         var options = new AirTouchOptions
         {
@@ -187,37 +187,75 @@ public static class Program
 
         reporter.Check("token 是 UUID v4 格式", Guid.TryParseExact(token, "D", out _), token);
 
-        var ok = guard.TryAuthorize("192.168.1.10", $"/ws?token={token}");
-        reporter.Equal("正确 token 放行", AuthResult.Allow, ok.Result);
+        var pairing = guard.TryAuthorize("192.168.1.10", $"/ws?token={token}");
+        reporter.Equal("正确 token 放行并进入配对模式", AuthResult.AllowPairing, pairing.Result);
+        reporter.Equal("配对模式下 AuthMode 为 Pairing", AuthMode.Pairing, pairing.Mode);
+        reporter.Check("连接期间 token 尚未销毁", !guard.TokenConsumed);
 
-        guard.MarkConnected("192.168.1.10");
-        reporter.Equal("首个 IP 被绑定", "192.168.1.10", guard.BoundAddress);
-        reporter.Check("连接后 token 被销毁", guard.TokenConsumed);
+        guard.EndPending();
+        guard.MarkPaired("192.168.1.10");
+        reporter.Check("配对成功后 token 被销毁", guard.TokenConsumed);
 
-        var otherIp = guard.TryAuthorize("192.168.1.11", $"/ws?token={token}");
-        reporter.Equal("其他 IP 被拒绝", AuthResult.IpLocked, otherIp.Result);
-
-        var busy = guard.TryAuthorize("192.168.1.10", $"/ws?token={token}");
-        reporter.Equal("同一 IP 的第二条连接被拒绝", AuthResult.Busy, busy.Result);
-
-        var replay = guard.TryAuthorize("192.168.1.10", $"/ws?token={token}");
-        reporter.Check("重放已销毁 token 不算暴破", replay.Result is AuthResult.Busy or AuthResult.TokenExpired, replay.Result.ToString());
-
-        // --- token rotation keeps the IP binding
-        guard.MarkDisconnected("192.168.1.10");
         var rotated = guard.Token;
-        reporter.Check("断开后生成新 token", rotated != token);
+        reporter.Check("配对成功后立即生成新 token（二维码可继续用）", rotated != token);
 
-        var oldTokenAttempt = guard.TryAuthorize("192.168.1.10", $"/ws?token={token}");
-        // The reconnecting phone presents the token it already used; recognising it as a replay
-        // (rather than as a guess) is what keeps a Wi-Fi blip from banning the phone.
-        reporter.Equal("旧 token 判为已失效而非猜错", AuthResult.TokenExpired, oldTokenAttempt.Result);
+        // The phone that dropped off Wi-Fi may still present the token it used; that must read as a
+        // replay, not as a guess, or a couple of drops would permanently ban it.
+        var replay = guard.TryAuthorize("192.168.1.10", $"/ws?token={token}");
+        reporter.Equal("重放已销毁的 token 判为 token_expired", AuthResult.TokenExpired, replay.Result);
         reporter.Equal("重放旧 token 不计入失败次数", 0, guard.FailuresFor("192.168.1.10"));
 
-        var rebound = guard.TryAuthorize("192.168.1.10", $"/ws?token={rotated}");
-        reporter.Equal("绑定 IP 可用新 token 重连", AuthResult.Allow, rebound.Result);
+        // --- resume path: no token at all
+        var resume = guard.TryAuthorize("192.168.1.10", "/ws");
+        reporter.Equal("不带 token 的连接进入重连模式", AuthResult.AllowResume, resume.Result);
+        reporter.Equal("重连模式下 AuthMode 为 Resume", AuthMode.Resume, resume.Mode);
+        guard.EndPending();
 
-        // --- brute force lockout
+        guard.MarkAuthenticated("dev-key-1", "测试手机", "192.168.1.10");
+        reporter.Equal("认证后记录活动密钥", "dev-key-1", guard.ActiveKeyId);
+        reporter.Check("认证后存在活动连接", guard.HasActiveClient);
+
+        guard.MarkDisconnected("192.168.1.10");
+        reporter.Check("断开后活动连接被清空", !guard.HasActiveClient);
+
+        var again = guard.TryAuthorize("192.168.1.10", "/ws");
+        reporter.Equal("断开后不带 token 即进入重连模式", AuthResult.AllowResume, again.Result);
+        guard.EndPending();
+
+        var withNewToken = guard.TryAuthorize("192.168.1.10", $"/ws?token={guard.Token}");
+        reporter.Equal("带新 token 连接则进入配对模式（可添加下一台手机）", AuthResult.AllowPairing, withNewToken.Result);
+        guard.EndPending();
+
+        // --- pending budget: unauthenticated sockets cannot pile up
+        var pendingGuard = new ConnectionGuard(options);
+        for (var i = 0; i < options.MaxPendingSockets; i++)
+        {
+            var allowed = pendingGuard.TryAuthorize($"10.1.0.{i + 1}", "/ws");
+            reporter.Check($"第 {i + 1} 条待认证连接被接纳", allowed.Result == AuthResult.AllowResume, allowed.Result.ToString());
+        }
+
+        var overflow = pendingGuard.TryAuthorize("10.1.0.99", "/ws");
+        reporter.Equal($"第 {options.MaxPendingSockets + 1} 条待认证连接被拒绝",
+            AuthResult.TooManyPending, overflow.Result);
+        reporter.Equal("过载关闭码为 1013", 1013, overflow.CloseCode);
+
+        pendingGuard.EndPending();
+        var afterRelease = pendingGuard.TryAuthorize("10.1.0.99", "/ws");
+        reporter.Equal("释放一个槽位后又可以连接", AuthResult.AllowResume, afterRelease.Result);
+        pendingGuard.EndPending();
+
+        // --- pairing token is re-checked when the key is registered
+        var pairGuard = new ConnectionGuard(options);
+        var liveToken = pairGuard.Token;
+        reporter.Equal("auth_req 里的有效 token 通过校验",
+            AuthResult.AllowPairing, pairGuard.CheckPairingToken("10.2.0.1", liveToken).Result);
+        reporter.Equal("auth_req 里的错误 token 被拒绝",
+            AuthResult.TokenInvalid, pairGuard.CheckPairingToken("10.2.0.2", "nope").Result);
+        pairGuard.MarkPaired("10.2.0.1");
+        reporter.Equal("已被别的手机用掉的 token 判为过期",
+            AuthResult.TokenExpired, pairGuard.CheckPairingToken("10.2.0.3", liveToken).Result);
+
+        // --- brute force lockout on the token
         var attacker = new ConnectionGuard(options);
         AuthOutcome last = default!;
         for (var attempt = 1; attempt <= options.MaxTokenFailures; attempt++)
@@ -232,11 +270,25 @@ public static class Program
         reporter.Equal("封禁后即使 token 正确也拒绝", AuthResult.Banned, afterBan.Result);
 
         var goodNeighbour = attacker.TryAuthorize("10.0.0.67", $"/ws?token={attacker.Token}");
-        reporter.Equal("封禁只影响肇事 IP", AuthResult.Allow, goodNeighbour.Result);
+        reporter.Equal("封禁只影响肇事 IP", AuthResult.AllowPairing, goodNeighbour.Result);
+        attacker.EndPending();
 
         attacker.Reset("测试");
         var afterReset = attacker.TryAuthorize("10.0.0.66", $"/ws?token={attacker.Token}");
-        reporter.Equal("重置后解封", AuthResult.Allow, afterReset.Result);
+        reporter.Equal("重置后解封", AuthResult.AllowPairing, afterReset.Result);
+        attacker.EndPending();
+
+        // --- device-key failures have their own budget (and are never mixed with token failures)
+        var keyGuard = new ConnectionGuard(options);
+        var authBanned = false;
+        for (var attempt = 1; attempt <= options.MaxAuthFailures; attempt++)
+        {
+            authBanned = keyGuard.RegisterAuthFailure("10.3.0.1", "伪造签名");
+        }
+
+        reporter.Check($"连续 {options.MaxAuthFailures} 次签名失败后封禁", authBanned);
+        reporter.Equal("签名失败不占用 token 失败额度", 0, keyGuard.FailuresFor("10.3.0.1"));
+        reporter.Equal("签名失败单独计数", options.MaxAuthFailures, keyGuard.AuthFailuresFor("10.3.0.1"));
 
         // --- path + rate limit
         var pathGuard = new ConnectionGuard(options);
@@ -246,8 +298,10 @@ public static class Program
         AuthOutcome rateOutcome = default!;
         for (var i = 0; i < options.MaxConnectionAttemptsPerWindow + 5; i++)
         {
-            // A valid token on the valid path, so only the rate limiter can stop us.
+            // A valid token on the valid path, releasing the pending slot each time, so only the rate
+            // limiter can stop us.
             rateOutcome = rateGuard.TryAuthorize("10.0.0.9", $"/ws?token={rateGuard.Token}");
+            rateGuard.EndPending();
         }
 
         reporter.Equal("超出速率限制被拒绝", AuthResult.RateLimited, rateOutcome.Result);
@@ -306,9 +360,28 @@ public static class Program
         var url = Protocol.BuildUrl("192.168.1.5", 8443, "abc-123");
         reporter.Equal("二维码 URL 格式", "wss://192.168.1.5:8443/ws?token=abc-123", url);
 
-        var welcome = Protocol.BuildWelcome("1.0.0", "192.168.1.5", 8443, "192.168.1.9", 1024, 64);
+        var welcome = Protocol.BuildWelcome(
+            "2.0.0", "192.168.1.5", 8443, "sid-test", 1024, 64, 1920, 1080, 180, "Pixel", "key-1", "pair", 2);
         reporter.Equal("welcome 类型", "welcome", TestJson.GetString(welcome, "type"));
         reporter.Equal("welcome 端口", 8443, (int)TestJson.GetLong(welcome, "port"));
+        reporter.Equal("welcome 带协议版本", 2, (int)TestJson.GetLong(welcome, "protocolVersion"));
+        reporter.Equal("welcome 带屏幕宽度", 1920, (int)TestJson.GetLong(welcome, "screenWidth"));
+        reporter.Equal("welcome 带屏幕高度", 1080, (int)TestJson.GetLong(welcome, "screenHeight"));
+        reporter.Equal("welcome 带屏幕刷新率（手机据此选默认测试频率）", 180, (int)TestJson.GetLong(welcome, "displayHz"));
+        reporter.Equal("welcome 带认证方式", "pair", TestJson.GetString(welcome, "authMode"));
+        reporter.Equal("welcome 带服务器身份", "sid-test", TestJson.GetString(welcome, "sid"));
+
+        var challenge = Protocol.BuildAuthChallenge("sid-test", "nonce-test", 1762000000, 12, "resume");
+        reporter.Equal("auth_challenge 类型", "auth_challenge", TestJson.GetString(challenge, "type"));
+        reporter.Equal("auth_challenge 带 nonce", "nonce-test", TestJson.GetString(challenge, "nonce"));
+        reporter.Equal("auth_challenge 带服务器时间（供手机校正时钟）",
+            1762000000L, TestJson.GetLong(challenge, "serverTime"));
+
+        var urlWithIdentity = Protocol.BuildUrl("192.168.1.5", 8443, "tok", "sid-abc", "pin-xyz");
+        reporter.Check("配对 URL 带 sid 与 fp",
+            urlWithIdentity.Contains("sid=sid-abc") && urlWithIdentity.Contains("fp=pin-xyz"), urlWithIdentity);
+        reporter.Check("配对 URL 仍以 token 开头（旧客户端可解析）",
+            urlWithIdentity.StartsWith("wss://192.168.1.5:8443/ws?token=tok", StringComparison.Ordinal), urlWithIdentity);
 
         reporter.Check("file_ack 省略 null 字段", !Protocol.BuildFileAck("a.txt", false, 0, null, "boom").Contains("savedPath"));
 
@@ -318,6 +391,121 @@ public static class Program
         reporter.Equal("中文文件名大小不被破坏", 1234L, TestJson.GetLong(chineseHeader, "fileSize"));
         reporter.Check("中文文件名不允许出现未转义的裸字符（\u4e2d）",
             !chineseHeader.Contains('中'));
+
+        RunProtocolV2Tests(reporter);
+        RunCursorSamplerTests(reporter);
+    }
+
+    /// <summary>
+    /// Direct tests for <see cref="CursorSampler"/> — the "how often did the cursor really move?" probe.
+    /// The read function is injected, so these two cases are deterministic: a constant position must
+    /// count zero updates (the first reading is only a baseline), and a position that changes on every
+    /// poll must count roughly every poll.
+    /// </summary>
+    private static void RunCursorSamplerTests(TestReporter reporter)
+    {
+        using (var sampler = new CursorSampler(() => (100, 200)))
+        {
+            sampler.Start();
+            Thread.Sleep(60);
+            var stats = sampler.Stop();
+            reporter.Equal("光标采样：位置不变时记 0 次更新（首次读数只作基线）", 0, stats.Updates);
+            reporter.Check("光标采样：静止时也在高频轮询（采样率可信）", stats.PollHz >= 200, $"{stats.PollHz} Hz");
+        }
+
+        var counter = 0;
+        using (var sampler = new CursorSampler(() => (Interlocked.Increment(ref counter), 0)))
+        {
+            sampler.Start();
+            Thread.Sleep(60);
+            var stats = sampler.Stop();
+            // 每次轮询都换一个位置 → 更新次数与采样次数同阶（少算一次基线）
+            reporter.Check("光标采样：位置每次都变时更新次数≈采样次数",
+                stats.Updates >= 200 && stats.PollHz >= 200,
+                $"更新 {stats.Updates} 次 / 采样 {stats.PollHz} Hz");
+        }
+    }
+
+    /// <summary>
+    /// The v2 additions: absolute moves, the diagnostic frames and — most importantly — the exact byte
+    /// layout of the signed authentication payload.
+    /// </summary>
+    private static void RunProtocolV2Tests(TestReporter reporter)
+    {
+        var moveTo = Protocol.Parse("""{"type":"moveto","x":120,"y":-40,"seq":7}""");
+        reporter.Check("解析 moveto", moveTo is { Kind: MessageKind.MoveTo, X: 120, Y: -40, Seq: 7 });
+        reporter.Check("moveto 超限被截断",
+            Protocol.Parse("""{"type":"moveto","x":999999,"y":0}""") is { X: Protocol.MaxAbsoluteCoordinate },
+            Protocol.Parse("""{"type":"moveto","x":999999,"y":0}""")?.X.ToString());
+
+        var seqless = Protocol.Parse("""{"type":"move","dx":1,"dy":2}""");
+        reporter.Check("move 没有 seq 时 Seq 为 null（诊断是可选字段）", seqless is { Seq: null });
+
+        var diagBegin = Protocol.Parse("""{"type":"diag_begin","testKind":"circle","mode":"abs","planned":600,"targetHz":100,"circleMs":2400}""");
+        reporter.Check("解析 diag_begin", diagBegin is { Kind: MessageKind.DiagBegin, Diag.Planned: 600, Diag.TargetHz: 100 });
+
+        var diagReport = Protocol.Parse("""{"type":"diag_report","testKind":"circle","mode":"rel","sent":590,"firstSeq":1,"lastSeq":600,"elapsedMs":5900,"targetHz":100,"circleMs":2400,"maxSendGapMs":37}""");
+        reporter.Check("解析 diag_report", diagReport is { Kind: MessageKind.DiagReport, Diag.Sent: 590, Diag.MaxSendGapMs: 37 });
+        reporter.Equal("diag_report 缺失的字段按 0 处理", 0, diagReport!.Diag!.Planned);
+
+        var authReq = Protocol.Parse("""{"type":"auth_req","auth_v":1,"keyId":"kid","sign":"sig","ts":1762000000,"token":"t","pubKey":"pk","deviceName":"phone"}""");
+        reporter.Check("解析 auth_req", authReq is
+        {
+            Kind: MessageKind.AuthReq,
+            AuthVersion: 1,
+            KeyId: "kid",
+            Signature: "sig",
+            Timestamp: 1762000000,
+            Token: "t",
+            PublicKey: "pk",
+        });
+
+        // ---- the signed byte layout, which both implementations must agree on bit for bit
+        reporter.Equal(
+            "签名原文为固定的 LF 分隔格式",
+            "AirTouch-Auth-v1\nsid123\nnonce456\nkeyid789\n1762000000",
+            AuthCrypto.Canonical("sid123", "nonce456", "keyid789", 1762000000));
+
+        using var device = new TestDevice("单元测试设备");
+        reporter.Check("设备 keyId 是 22 个字符的 base64url", device.KeyId.Length == 22, device.KeyId);
+
+        var canonical = AuthCrypto.Canonical("sid123", "nonce456", device.KeyId, 1762000000);
+        reporter.Check("公钥可以被服务端导入并用于验签",
+            AuthCrypto.VerifySignature(
+                AuthCrypto.FromBase64UrlOrThrow(device.PublicKey),
+                canonical,
+                AuthCrypto.FromBase64UrlOrThrow(AuthCrypto.Base64Url(AuthCrypto.SignForClient(device.GetKey(), canonical)))));
+
+        // A P1363 (r||s) signature must NOT be accepted: if it were, the server would be guessing the
+        // encoding and a real Android client (which always sends DER) would fail at runtime instead.
+        var p1363 = device.SignP1363("sid123", "nonce456", device.KeyId, 1762000000);
+        reporter.Check("非 DER（IEEE P1363）签名被拒绝",
+            !AuthCrypto.VerifySignature(
+                AuthCrypto.FromBase64UrlOrThrow(device.PublicKey),
+                canonical,
+                AuthCrypto.FromBase64UrlOrThrow(p1363)));
+
+        reporter.Check("签名对原文变化敏感",
+            !AuthCrypto.VerifySignature(
+                AuthCrypto.FromBase64UrlOrThrow(device.PublicKey),
+                AuthCrypto.Canonical("sid123", "nonce-other", device.KeyId, 1762000000),
+                AuthCrypto.FromBase64UrlOrThrow(AuthCrypto.Base64Url(AuthCrypto.SignForClient(device.GetKey(), canonical)))));
+
+        reporter.Check("keyId 与公钥严格对应",
+            AuthCrypto.KeyIdOfPublicKey(AuthCrypto.FromBase64UrlOrThrow(device.PublicKey)) == device.KeyId);
+
+        // base64url round-trip must survive every byte value
+        var blob = new byte[256];
+        for (var i = 0; i < blob.Length; i++)
+        {
+            blob[i] = (byte)i;
+        }
+
+        var encoded = AuthCrypto.Base64Url(blob);
+        reporter.Check("base64url 往返一致且不含填充符",
+            !encoded.Contains('=') && !encoded.Contains('+') && !encoded.Contains('/') &&
+            AuthCrypto.FromBase64UrlOrThrow(encoded).SequenceEqual(blob));
+        reporter.Check("base64url 解码对非法字符返回 false", !AuthCrypto.TryFromBase64Url("aaa!bbb", out _));
     }
 
     // ----------------------------------------------------------- certificate
@@ -355,6 +543,53 @@ public static class Program
 
         var qr = QrCodeRenderer.RenderPng(Protocol.BuildUrl("192.168.1.5", 8443, Guid.NewGuid().ToString("D")));
         reporter.Check("二维码是 PNG", qr.Length > 8 && qr[0] == 0x89 && qr[1] == 0x50 && qr[2] == 0x4E && qr[3] == 0x47, $"{qr.Length} 字节");
+
+        // --- 服务器身份（sid）与证书固定值（fp）
+        var identity = ServerIdentity.GetOrCreate(dataDir);
+        reporter.Check("生成了服务器身份", identity.Id.Length == 22, identity.Id);
+
+        var identityAgain = ServerIdentity.GetOrCreate(dataDir);
+        reporter.Check("重启后服务器身份不变（手机的指纹固定靠它）", identityAgain.Id == identity.Id);
+
+        var pin = AuthCrypto.PinOfCertificate(certificate.Certificate);
+        reporter.Check("证书固定值是 22 字符 base64url", pin.Length == 22, pin);
+        reporter.Check("固定值稳定（同一证书重复计算结果一致）",
+            pin == AuthCrypto.PinOfCertificate(certificate.Certificate));
+        reporter.Check("固定值与整证书指纹不同（SPKI 与整证书是两种哈希）",
+            !string.Equals(pin, certificate.Fingerprint, StringComparison.OrdinalIgnoreCase));
+
+        var longUrl = Protocol.BuildUrl("192.168.1.5", 8443, Guid.NewGuid().ToString("D"), identity.Id, pin);
+        var longQr = QrCodeRenderer.RenderPng(longUrl, 8);
+        reporter.Check("带 sid/fp 的二维码仍能渲染且体积可控", longQr.Length > 300 && longQr.Length < 20000,
+            $"{longUrl.Length} 字符 → {longQr.Length} 字节 PNG");
+        reporter.Check("带 sid/fp 的二维码仍能被解析回原始 URL（大小在 QR 容量内）",
+            longUrl.Length < 300, $"{longUrl.Length} 字符");
+
+        // --- 信任设备列表
+        var deviceDir = Path.Combine(workspace, "devices-data");
+        Directory.CreateDirectory(deviceDir);
+        var store = DeviceKeyStore.Load(deviceDir);
+        using (var device = new TestDevice("落盘测试")) { var spki = AuthCrypto.FromBase64UrlOrThrow(device.PublicKey);
+            store.Upsert(device.KeyId, device.PublicKey, "Pixel 8", "192.168.1.7");
+            store.Touch(device.KeyId, "192.168.1.8");
+
+            var reloaded = DeviceKeyStore.Load(deviceDir);
+            var loaded = reloaded.Find(device.KeyId);
+            reporter.Check("信任设备可以持久化并重新加载",
+                loaded is not null && loaded.Name == "Pixel 8" && loaded.SessionCount == 1 && loaded.LastAddress == "192.168.1.8",
+                loaded?.ToString());
+
+            reporter.Check("撤销后不再信任", reloaded.Revoke(device.KeyId) && reloaded.Find(device.KeyId) is null);
+        }
+
+        // A tampered file (keyId that does not match the public key) must be ignored, not trusted.
+        File.WriteAllText(
+            Path.Combine(deviceDir, DeviceKeyStore.FileName),
+            """
+            {"version":1,"devices":[{"keyId":"AAAAAAAAAAAAAAAAAAAAAA","publicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","name":"evil"}]}
+            """);
+        var tampered = DeviceKeyStore.Load(deviceDir);
+        reporter.Equal("keyId 与公钥不匹配的设备条目被丢弃", 0, tampered.Count);
     }
 
     // ------------------------------------------------------------ end to end
@@ -379,8 +614,6 @@ public static class Program
             UseTls = useTls,
         };
 
-        string Url(string host, string token) => Protocol.BuildUrl(host, port, token, useTls);
-
         var log = new AirTouchLog(dataDir);
         var mouse = new RecordingMouseController();
         using var server = new AirTouchServer(options, mouse, log);
@@ -394,39 +627,175 @@ public static class Program
             }
         };
 
+        ServerDiagReport? diagResult = null;
+        server.DiagnosticReportReady += (_, report) =>
+        {
+            lock (received)
+            {
+                diagResult = report;
+            }
+        };
+
         server.Start();
         reporter.Check("服务已启动", server.IsRunning);
 
         var status = server.GetStatus();
         reporter.Check("状态里带出证书指纹", status.CertificateFingerprint.Contains(':'));
         reporter.Equal("接收目录为配置值", downloadDir, status.DownloadDirectory);
+        reporter.Check("状态里带出服务器身份", status.Sid.Length == 22, status.Sid);
+        reporter.Check("状态里带出证书固定值", status.CertificatePin.Length == 22, status.CertificatePin);
+        reporter.Equal("初始状态没有信任设备", 0, status.TrustedDevices.Count);
 
         var token = status.Token;
-        var url = Url("127.0.0.1", token);
+        var sid = status.Sid;
+        var pin = status.CertificatePin;
 
-        // --- connect with fingerprint validation
-        await using var client = WssTestClient.Create(status.CertificateFingerprint);
-        await client.ConnectAsync(url, LongWait);
+        string Url(string host, string? token) => Protocol.BuildUrl(host, port, token, sid, pin, useTls);
+
+        reporter.Check("二维码/URL 里带 sid 与 fp",
+            Url("127.0.0.1", token).Contains($"sid={sid}") && Url("127.0.0.1", token).Contains($"fp={pin}"));
+
+        // --- 配对（带着一次性 token 连接）
+        using var deviceA = new TestDevice("Pixel-Test");
+        var client = WssTestClient.Create(status.CertificateFingerprint);
+        await client.ConnectAsync(Url("127.0.0.1", token), LongWait);
         reporter.Check(
             useTls ? "wss 连接成功（指纹校验通过）" : "ws 回环连接成功（本机 TLS 不可用，见上文跳过项）",
             true,
             useTls ? client.FingerprintError ?? "证书指纹匹配" : "明文回环，仅用于验证协议逻辑");
 
-        var welcome = client.Receive(ShortWait);
-        reporter.Equal("收到 welcome", "welcome", welcome?.MessageType);
+        var challenge = TestAuth.ReceiveChallenge(client, ShortWait);
+        reporter.Check("连接后服务器先下发 auth_challenge（不先发 welcome）", challenge is not null);
+        reporter.Equal("配对连接的挑战模式为 pair", "pair", challenge!.Mode);
+        reporter.Equal("挑战携带服务器身份 sid", sid, challenge.Sid);
+        reporter.Check("挑战 nonce 为 32 字节", AuthCrypto.FromBase64UrlOrThrow(challenge.Nonce).Length == 32);
+        reporter.Equal("挑战有效期与配置一致", (int)options.AuthTimeout.TotalSeconds, challenge.ExpiresIn);
+        reporter.Check("挑战携带服务器时间（供手机校正时钟）",
+            Math.Abs(AuthCrypto.UnixNow() - challenge.ServerTime) < 120, challenge.ServerTime.ToString());
+        reporter.Equal("握手期间挂起计数为 1", 1, server.GetStatus().PendingCount);
+
+        // Nothing may be executed before the key proof lands — this is what makes "pair only on a
+        // token-authenticated socket" enforceable rather than a comment.
+        await client.SendTextAsync("""{"type":"move","dx":500,"dy":500}""");
+        await Task.Delay(250);
+        reporter.Check("认证前控制指令被忽略", mouse.Events.Count == 0, string.Join(" | ", mouse.Events));
+
+        await client.SendTextAsync(deviceA.BuildAuthRequest(challenge.Sid, challenge.Nonce, token));
+        var welcome = await WaitForFrameAsync(client, frame => frame.MessageType == "welcome", ShortWait);
+        reporter.Equal("配对成功收到 welcome", "welcome", welcome?.MessageType);
         reporter.Equal("welcome 携带 chunkSize", 64 * 1024, (int)TestJson.GetLong(welcome!.Text!, "chunkSize"));
+        reporter.Equal("welcome 宣告协议版本 2", 2, (int)TestJson.GetLong(welcome.Text!, "protocolVersion"));
+        reporter.Equal("welcome 回显设备 keyId", deviceA.KeyId, TestJson.GetString(welcome.Text!, "keyId"));
+        reporter.Equal("welcome 认证方式为 pair", "pair", TestJson.GetString(welcome.Text!, "authMode"));
+        reporter.Equal("welcome 报告信任设备数", 1, (int)TestJson.GetLong(welcome.Text!, "trustedCount"));
+        reporter.Check("welcome 带主屏尺寸",
+            TestJson.GetLong(welcome.Text!, "screenWidth") > 0 && TestJson.GetLong(welcome.Text!, "screenHeight") > 0,
+            $"{TestJson.GetLong(welcome.Text!, "screenWidth")}×{TestJson.GetLong(welcome.Text!, "screenHeight")}");
 
-        reporter.Check("服务端记录了绑定 IP", await WaitForAsync(() => server.GetStatus().BoundAddress == "127.0.0.1", ShortWait),
-            server.GetStatus().BoundAddress ?? "<null>");
+        reporter.Check("配对的公钥已入库", server.TrustedDevices.Any(d => d.KeyId == deviceA.KeyId));
+        reporter.Check("配对后 token 被销毁", server.GetStatus().TokenConsumed);
+        reporter.Check("配对后 token 已轮换（二维码可继续添加下一台手机）", server.GetStatus().Token != token);
+        reporter.Equal("认证完成后挂起计数归零", 0, server.GetStatus().PendingCount);
+        reporter.Equal("服务端记录活动设备密钥", deviceA.KeyId, server.GetStatus().ClientKeyId);
+        reporter.Equal("服务端记录认证方式", "pair", server.GetStatus().ClientAuthMode);
 
-        // --- second connection while busy
-        await using (var second = WssTestClient.Create(status.CertificateFingerprint))
+        // --- 负面认证用例（每条都换一条新 socket）
+        await using (var unknownKey = WssTestClient.Create(status.CertificateFingerprint))
         {
-            await second.ConnectAsync(url, ShortWait);
-            var (code, message, closeCode) = second.ReceiveRejection(ShortWait);
-            reporter.Equal("并发第二条连接被拒绝（busy）", "busy", code);
-            reporter.Info($"busy 关闭码 {closeCode}，消息：{message}");
+            using var stranger = new TestDevice("陌生设备");
+            await unknownKey.ConnectAsync(Url("127.0.0.1", null), ShortWait);
+            var strangerChallenge = TestAuth.ReceiveChallenge(unknownKey, ShortWait);
+            await unknownKey.SendTextAsync(stranger.BuildAuthRequest(strangerChallenge!.Sid, strangerChallenge.Nonce));
+            var (code, message, _) = unknownKey.ReceiveRejection(ShortWait);
+            reporter.Equal("未信任设备不带 token 重连被拒（key_unknown）", "key_unknown", code);
+            reporter.Info($"key_unknown：{message}");
         }
+
+        await using (var badSignature = WssTestClient.Create(status.CertificateFingerprint))
+        {
+            await badSignature.ConnectAsync(Url("127.0.0.1", null), ShortWait);
+            var badChallenge = TestAuth.ReceiveChallenge(badSignature, ShortWait);
+            await badSignature.SendTextAsync(deviceA.BuildAuthRequest(
+                badChallenge!.Sid,
+                badChallenge.Nonce,
+                signatureOverride: AuthCrypto.Base64Url(new byte[70])));
+            var (code, _, _) = badSignature.ReceiveRejection(ShortWait);
+            reporter.Equal("签名不合法被拒（sig_invalid）", "sig_invalid", code);
+        }
+
+        await using (var wrongKey = WssTestClient.Create(status.CertificateFingerprint))
+        {
+            await wrongKey.ConnectAsync(Url("127.0.0.1", null), ShortWait);
+            var wrongChallenge = TestAuth.ReceiveChallenge(wrongKey, ShortWait);
+
+            // A perfectly valid signature, but produced by a different key than the claimed keyId.
+            using var impostor = new TestDevice("冒充者");
+            var canonical = AuthCrypto.Canonical(wrongChallenge!.Sid, wrongChallenge.Nonce, deviceA.KeyId, AuthCrypto.UnixNow());
+            var forged = AuthCrypto.Base64Url(AuthCrypto.SignForClient(impostor.GetKey(), canonical));
+            await wrongKey.SendTextAsync(deviceA.BuildAuthRequest(
+                wrongChallenge.Sid,
+                wrongChallenge.Nonce,
+                timestampOverride: AuthCrypto.UnixNow(),
+                signatureOverride: forged));
+            var (code, _, _) = wrongKey.ReceiveRejection(ShortWait);
+            reporter.Equal("用别的私钥签名被拒（sig_invalid）", "sig_invalid", code);
+        }
+
+        await using (var stale = WssTestClient.Create(status.CertificateFingerprint))
+        {
+            await stale.ConnectAsync(Url("127.0.0.1", null), ShortWait);
+            var staleChallenge = TestAuth.ReceiveChallenge(stale, ShortWait);
+            await stale.SendTextAsync(deviceA.BuildAuthRequest(
+                staleChallenge!.Sid,
+                staleChallenge.Nonce,
+                timestampOverride: AuthCrypto.UnixNow() - 3600));
+            var (code, _, _) = stale.ReceiveRejection(ShortWait);
+            reporter.Equal("时间戳过期的证明被拒（stale_auth）", "stale_auth", code);
+        }
+
+        await using (var replay = WssTestClient.Create(status.CertificateFingerprint))
+        {
+            await replay.ConnectAsync(Url("127.0.0.1", null), ShortWait);
+            var replayChallenge = TestAuth.ReceiveChallenge(replay, ShortWait);
+            await replay.SendTextAsync(deviceA.BuildAuthRequest(
+                replayChallenge!.Sid,
+                replayChallenge.Nonce,
+                timestampOverride: AuthCrypto.UnixNow(),
+                signatureOverride: AuthCrypto.Base64Url(
+                    AuthCrypto.SignForClient(deviceA.GetKey(),
+                        AuthCrypto.Canonical(replayChallenge.Sid, "别的 nonce", deviceA.KeyId, AuthCrypto.UnixNow())))));
+            var (code, _, _) = replay.ReceiveRejection(ShortWait);
+            reporter.Equal("为别的 nonce 签的证明无法重放（sig_invalid）", "sig_invalid", code);
+        }
+
+        await using (var oldProtocol = WssTestClient.Create(status.CertificateFingerprint))
+        {
+            await oldProtocol.ConnectAsync(Url("127.0.0.1", null), ShortWait);
+            var protocolChallenge = TestAuth.ReceiveChallenge(oldProtocol, ShortWait);
+            await oldProtocol.SendTextAsync(deviceA.BuildAuthRequest(protocolChallenge!.Sid, protocolChallenge.Nonce)
+                .Replace("\"auth_v\":1", "\"auth_v\":99", StringComparison.Ordinal));
+            var (code, _, _) = oldProtocol.ReceiveRejection(ShortWait);
+            reporter.Equal("认证版本不支持时返回 auth_unsupported", "auth_unsupported", code);
+        }
+
+        reporter.Check("负面用例之后连接仍可正常恢复（未误伤）",
+            await WaitForAsync(() => server.GetStatus().PendingCount == 0, ShortWait),
+            server.GetStatus().PendingCount.ToString());
+
+        // --- 同一台手机重连会顶掉旧连接，而不是被 busy 挡住
+        var previousSocket = client;
+        var sameAgain = WssTestClient.Create(status.CertificateFingerprint);
+        await sameAgain.ConnectAsync(Url("127.0.0.1", null), ShortWait);
+        var resumed = await TestAuth.AuthenticateAsync(sameAgain, deviceA, null, ShortWait);
+        reporter.Equal("同一设备免扫码重连成功", "welcome", resumed?.MessageType);
+        reporter.Equal("重连认证方式为 resume", "resume", TestJson.GetString(resumed!.Text!, "authMode"));
+
+        var replaced = await WaitForFrameAsync(previousSocket, frame => frame.MessageType == "error", ShortWait);
+        reporter.Equal("旧连接收到 replaced 并关闭",
+            "replaced", replaced is null ? "<无>" : TestJson.GetString(replaced.Text!, "code"));
+
+        await previousSocket.DisposeAsync();
+        client = sameAgain;
 
         // --- control commands
         await client.SendTextAsync("""{"type":"hello","deviceName":"Pixel-Test","appVersion":"1.0.0"}""");
@@ -526,6 +895,67 @@ public static class Program
         await client.SendTextAsync("""{"type":"reset"}""");
         reporter.Check("无 header 的二进制帧被忽略且连接存活", await WaitForAsync(() => mouse.Events.Count >= 9, ShortWait));
 
+        // --- 绝对定位：绕过 Windows 指针加速，画圆测试靠它给出精确轨迹
+        await client.SendTextAsync("""{"type":"moveto","x":123,"y":456,"seq":1}""");
+        await client.SendTextAsync("""{"type":"moveto","x":999999,"y":-999999,"seq":2}""");
+        reporter.Check("moveto 被记录", await WaitForAsync(() => mouse.Events.Any(e => e == "moveto 123 456"), ShortWait),
+            string.Join(" | ", mouse.Events.TakeLast(3)));
+        reporter.Check("moveto 超出协议上限的坐标被截断",
+            await WaitForAsync(() => mouse.Events.Any(e => e == $"moveto {Protocol.MaxAbsoluteCoordinate} {-Protocol.MaxAbsoluteCoordinate}"), ShortWait),
+            string.Join(" | ", mouse.Events.TakeLast(3)));
+
+        // --- 通信测试诊断（手机端「画圆测试」的服务端一半）
+        await client.SendTextAsync("""{"type":"diag_begin","testKind":"circle","mode":"abs","planned":200,"targetHz":100,"circleMs":2400}""");
+        for (var i = 1; i <= 200; i++)
+        {
+            await client.SendTextAsync($$"""{"type":"moveto","x":{{i}},"y":{{i}},"seq":{{i + 10}}}""");
+        }
+
+        await client.SendTextAsync(
+            """{"type":"diag_report","testKind":"circle","mode":"abs","sent":200,"planned":200,"firstSeq":11,"lastSeq":210,"elapsedMs":2000,"targetHz":100,"circleMs":2400,"maxSendGapMs":25}""");
+
+        var diagFrame = await WaitForFrameAsync(client, frame => frame.MessageType == "diag_report", LongWait);
+        reporter.Check("服务端回传 diag_report", diagFrame is not null, diagFrame?.Text ?? "<超时>");
+
+        await WaitForAsync(() =>
+        {
+            lock (received)
+            {
+                return diagResult is not null;
+            }
+        }, ShortWait);
+
+        if (diagResult is not null)
+        {
+            reporter.Equal("诊断：统计到全部帧", 200, diagResult.Received);
+            reporter.Equal("诊断：无丢帧", 0, diagResult.Lost);
+            reporter.Equal("诊断：无重复", 0, diagResult.Duplicated);
+            reporter.Equal("诊断：无乱序", 0, diagResult.OutOfOrder);
+            reporter.Equal("诊断：记录首序号", 11, diagResult.FirstSeq);
+            reporter.Equal("诊断：记录末序号", 210, diagResult.LastSeq);
+            reporter.Equal("诊断：手机自报发送数", 200, diagResult.ClientSent);
+            reporter.Equal("诊断：手机自报最大发送间隔", 25, diagResult.ClientMaxSendGapMs);
+            reporter.Check("诊断：缺少的帧数按 0 计算（手机与电脑计数一致）", diagResult.Missing == 0);
+            reporter.Check("诊断：记录了到达间隔", diagResult.MaxGapMs >= 0 && diagResult.DurationMs >= 0,
+                $"max {diagResult.MaxGapMs} ms / 用时 {diagResult.DurationMs} ms");
+            reporter.Check("诊断：记录了光标起止位置", diagResult.EndX == 200 && diagResult.EndY == 200,
+                $"({diagResult.StartX},{diagResult.StartY}) → ({diagResult.EndX},{diagResult.EndY})");
+            reporter.Check("诊断：光标采样线程在跑（否则“光标实测更新率”不可信）",
+                diagResult.CursorSampleValid, $"采样 {diagResult.CursorPollHz} Hz");
+            reporter.Check("诊断：记录了光标实际更新次数",
+                diagResult.CursorUpdates >= 1 && diagResult.CursorUpdates <= diagResult.Received + 2,
+                $"{diagResult.CursorUpdates} 次 / 收到 {diagResult.Received} 帧");
+            reporter.Check("诊断：屏幕刷新率是可查询/可解释的值",
+                diagResult.DisplayHz is >= 0 and <= 1000, $"{diagResult.DisplayHz} Hz");
+        }
+        else
+        {
+            reporter.Check("诊断：服务端产生报告", false, "未收到 DiagnosticReportReady");
+        }
+
+        reporter.Check("服务端保留了最近一次诊断结果", server.LastDiagReport is not null);
+        reporter.Check("诊断结束后挂起/活动状态正常", server.GetStatus().ClientAddress is not null);
+
         // --- server -> client file transfer
         var downloadPayloadPath = Path.Combine(workspace, "download-payload.bin");
         var downloadPayload = CreateRandomFile(downloadPayloadPath, 220 * 1024);
@@ -568,12 +998,12 @@ public static class Program
             $"{assembled.Length} / {downloadPayload.Length}");
         reporter.Check("收到 file_end", fileEnd is not null);
 
-        // --- one-time token + ban
+        // --- 令牌只与「添加新手机」有关：断开不再轮换，重连压根不用它
+        var tokenBeforeDisconnect = server.GetStatus().Token;
         await client.CloseAsync();
         reporter.Check("服务端检测到断开", await WaitForAsync(() => server.GetStatus().ClientAddress is null, ShortWait));
-
-        var tokenAfterDisconnect = server.GetStatus().Token;
-        reporter.Check("断开后 token 已轮换", tokenAfterDisconnect != token);
+        reporter.Equal("断开后 token 保持不变（避免误伤免扫码重连）",
+            tokenBeforeDisconnect, server.GetStatus().Token);
 
         string? lastErrorCode = null;
         for (var attempt = 1; attempt <= options.MaxTokenFailures; attempt++)
@@ -585,23 +1015,70 @@ public static class Program
             reporter.Info($"第 {attempt} 次伪造 token → {code}");
         }
 
-        reporter.Equal("连续伪造后返回 banned", "banned", lastErrorCode);
+        reporter.Equal("连续伪造 token 后返回 banned", "banned", lastErrorCode);
 
         await using (var bannedClient = WssTestClient.Create(status.CertificateFingerprint))
         {
-            await bannedClient.ConnectAsync(Url("127.0.0.1", server.GetStatus().Token), ShortWait);
+            // Even a *trusted* device with no token at all is refused while the address is banned.
+            await bannedClient.ConnectAsync(Url("127.0.0.1", null), ShortWait);
             var (code, _, _) = bannedClient.ReceiveRejection(ShortWait);
-            reporter.Equal("封禁后正确 token 也被拒绝", "banned", code);
+            reporter.Equal("封禁期间即使不带 token 也被拒绝", "banned", code);
         }
 
         server.ResetSecurity("自检重置");
         reporter.Check("重置后封禁列表为空", server.GetStatus().BannedAddresses.Count == 0);
+        reporter.Check("重置不删除信任设备", server.TrustedDevices.Any(d => d.KeyId == deviceA.KeyId));
 
+        // 重置之后依旧可以免扫码重连：信任来自公钥，不来自 token，也不来自 IP。
         await using (var recovered = WssTestClient.Create(status.CertificateFingerprint))
         {
-            await recovered.ConnectAsync(Url("127.0.0.1", server.GetStatus().Token), ShortWait);
-            var welcomeAgain = recovered.Receive(ShortWait);
-            reporter.Equal("重置后可重新配对", "welcome", welcomeAgain?.MessageType);
+            await recovered.ConnectAsync(Url("127.0.0.1", null), ShortWait);
+            var backAgain = await TestAuth.AuthenticateAsync(recovered, deviceA, null, ShortWait);
+            reporter.Equal("重置后免扫码重连仍然成功", "welcome", backAgain?.MessageType);
+        }
+
+        // --- 第二台设备：不同公钥并存，同一时刻只允许一台
+        var tokenForB = server.RotateToken();
+        using var deviceB = new TestDevice("Pixel-B");
+        var socketB = WssTestClient.Create(status.CertificateFingerprint);
+        await socketB.ConnectAsync(Url("127.0.0.1", tokenForB), ShortWait);
+        var pairedB = await TestAuth.AuthenticateAsync(socketB, deviceB, tokenForB, ShortWait);
+        reporter.Equal("第二台手机配对成功", "welcome", pairedB?.MessageType);
+        reporter.Equal("第二台手机配对方式也是 pair", "pair", TestJson.GetString(pairedB!.Text!, "authMode"));
+        reporter.Equal("两台信任设备并存", 2, server.GetStatus().TrustedDevices.Count);
+
+        await using (var thirdWheel = WssTestClient.Create(status.CertificateFingerprint))
+        {
+            await thirdWheel.ConnectAsync(Url("127.0.0.1", null), ShortWait);
+            var thirdChallenge = TestAuth.ReceiveChallenge(thirdWheel, ShortWait);
+            await thirdWheel.SendTextAsync(deviceA.BuildAuthRequest(thirdChallenge!.Sid, thirdChallenge.Nonce));
+            var (code, message, closeCode) = thirdWheel.ReceiveRejection(ShortWait);
+            reporter.Equal("已有其他设备在线时被拒（busy）", "busy", code);
+            reporter.Info($"busy 关闭码 {closeCode}，消息：{message}");
+        }
+
+        await socketB.DisposeAsync();
+
+        // --- 撤销信任会立刻切断在线会话
+        await using (var revoked = WssTestClient.Create(status.CertificateFingerprint))
+        {
+            await revoked.ConnectAsync(Url("127.0.0.1", null), ShortWait);
+            var okAgain = await TestAuth.AuthenticateAsync(revoked, deviceB, null, ShortWait);
+            reporter.Equal("撤销前 B 可以重连", "welcome", okAgain?.MessageType);
+
+            reporter.Check("撤销设备返回 true", server.RevokeDevice(deviceB.KeyId));
+            var revokedFrame = await WaitForFrameAsync(revoked, frame => frame.MessageType == "error", ShortWait);
+            reporter.Equal("在线会话收到 trust_revoked",
+                "trust_revoked", revokedFrame is null ? "<无>" : TestJson.GetString(revokedFrame.Text!, "code"));
+            reporter.Check("撤销后连接被断开", await WaitForAsync(() => server.GetStatus().ClientAddress is null, ShortWait));
+            reporter.Check("撤销后 B 不再被信任", server.TrustedDevices.All(d => d.KeyId != deviceB.KeyId));
+
+            await using var revokedAgain = WssTestClient.Create(status.CertificateFingerprint);
+            await revokedAgain.ConnectAsync(Url("127.0.0.1", null), ShortWait);
+            var revokedChallenge = TestAuth.ReceiveChallenge(revokedAgain, ShortWait);
+            await revokedAgain.SendTextAsync(deviceB.BuildAuthRequest(revokedChallenge!.Sid, revokedChallenge.Nonce));
+            var (code, _, _) = revokedAgain.ReceiveRejection(ShortWait);
+            reporter.Equal("被撤销的设备重连得到 key_unknown", "key_unknown", code);
         }
 
         // --- wrong-path rejection over the wire
@@ -614,6 +1091,7 @@ public static class Program
 
         server.Stop();
         reporter.Check("服务已停止", !server.IsRunning);
+        await client.DisposeAsync();
 
         // --- port conflict surfaces as a friendly error
         var blocker = new TcpListener(IPAddress.Any, port);
@@ -634,6 +1112,29 @@ public static class Program
         finally
         {
             blocker.Stop();
+        }
+
+        // --- 重启后身份与信任都还在：这正是「以后再也不用扫码」的前提
+        using (var restarted = new AirTouchServer(options, mouse, log))
+        {
+            restarted.Start();
+            var restartedStatus = restarted.GetStatus();
+            reporter.Equal("重启后服务器身份不变", sid, restartedStatus.Sid);
+            reporter.Equal("重启后证书不变（固定值也不变）", pin, restartedStatus.CertificatePin);
+            reporter.Check("重启后信任设备仍在列表中",
+                restartedStatus.TrustedDevices.Any(d => d.KeyId == deviceA.KeyId),
+                string.Join(",", restartedStatus.TrustedDevices.Select(d => d.Name)));
+            reporter.Check("重启后 token 是新的（令牌不落盘）", restartedStatus.Token != server.GetStatus().Token);
+
+            await using var afterRestart = WssTestClient.Create(restartedStatus.CertificateFingerprint);
+            await afterRestart.ConnectAsync(
+                Protocol.BuildUrl("127.0.0.1", port, null, restartedStatus.Sid, restartedStatus.CertificatePin, useTls),
+                ShortWait);
+            var afterRestartWelcome = await TestAuth.AuthenticateAsync(afterRestart, deviceA, null, ShortWait);
+            reporter.Equal("电脑重启后手机仍可免扫码重连", "welcome", afterRestartWelcome?.MessageType);
+            reporter.Equal("重启后重连的信任设备数", 1, (int)TestJson.GetLong(afterRestartWelcome!.Text!, "trustedCount"));
+
+            restarted.Stop();
         }
     }
 
@@ -660,23 +1161,26 @@ public static class Program
             UseTls = useTls,
         };
 
-        string Url(string host, string token) => Protocol.BuildUrl(host, port, token, useTls);
-
         var log = new AirTouchLog(dataDir);
         var mouse = new Win32MouseController(log);
         using var server = new AirTouchServer(options, mouse, log);
         server.Start();
 
-        var connectAddress = lanAddress ?? "127.0.0.1";
-        var certificateFingerprint = server.GetStatus().CertificateFingerprint;
+        var liveStatus = server.GetStatus();
+        string Url(string host, string? token) => Protocol.BuildUrl(host, port, token, liveStatus.Sid, liveStatus.CertificatePin, useTls);
 
+        var connectAddress = lanAddress ?? "127.0.0.1";
+        var certificateFingerprint = liveStatus.CertificateFingerprint;
+
+        using var liveDevice = new TestDevice("真实输入自检设备");
         await using var client = WssTestClient.Create(certificateFingerprint);
-        await client.ConnectAsync(Url(connectAddress, server.GetStatus().Token), LongWait);
-        var welcome = client.Receive(ShortWait);
-        reporter.Check($"经 {connectAddress} 连接成功", welcome?.MessageType == "welcome");
+        await client.ConnectAsync(Url(connectAddress, liveStatus.Token), LongWait);
+        var welcome = await TestAuth.AuthenticateAsync(client, liveDevice, liveStatus.Token, ShortWait);
+        reporter.Check($"经 {connectAddress} 配对连接成功", welcome?.MessageType == "welcome");
 
         // Reset first so we start from a known position, then move right and compare.
         var resetsBefore = mouse.ResetCount;
+        var positionBeforeReset = mouse.GetCursorPosition();
         await client.SendTextAsync("""{"type":"reset"}""");
 
         // SetCursorPos is immediate, so sample fast instead of sleeping once: whoever is sitting at
@@ -698,7 +1202,23 @@ public static class Program
             }
         }
 
-        reporter.Check("reset 指令被服务端执行", mouse.ResetCount > resetsBefore);
+        // The reset is asynchronous with respect to this thread: the text frame has to come back from the
+        // server's receive loop. Poll the counter (and the position) instead of reading once, otherwise
+        // this check fails whenever the round trip happens to take longer than the 400 ms sampling loop.
+        var resetSeen = false;
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            if (mouse.ResetCount > resetsBefore)
+            {
+                resetSeen = true;
+                break;
+            }
+
+            await Task.Delay(5);
+        }
+
+        reporter.Check("reset 指令被服务端执行", resetSeen,
+            $"复位前计数 {resetsBefore} → 现在 {mouse.ResetCount}，光标 {positionBeforeReset} → {afterReset}");
         reporter.Check("reset 把光标放到主屏中心",
             Math.Abs(afterReset.X - center.X) <= 2 && Math.Abs(afterReset.Y - center.Y) <= 2,
             $"期望 {center}，实际 {afterReset}");
@@ -715,18 +1235,30 @@ public static class Program
         reporter.Check("滚轮与点击被 SendInput 接受", mouse.ScrollCount >= 1 && mouse.ClickCount >= 1,
             $"滚轮 {mouse.ScrollCount}，点击 {mouse.ClickCount}");
 
-        // --- IP binding is enforced against a genuinely different source address
+        // --- 绝对定位（画圆测试依赖它给出精确轨迹；SendInput 会应用指针加速，SetCursorPos 不会）
+        await client.SendTextAsync("""{"type":"moveto","x":400,"y":300}""");
+        await Task.Delay(150);
+        var afterMoveTo = mouse.GetCursorPosition();
+        reporter.Check("moveto 把光标放到精确坐标（不受指针加速影响）",
+            Math.Abs(afterMoveTo.X - 400) <= 1 && Math.Abs(afterMoveTo.Y - 300) <= 1,
+            $"期望 (400,300)，实际 {afterMoveTo}");
+
+        // --- 本次实现里 IP 不再是信任依据：换一个源地址发起未认证连接只会被判为未信任，
+        //     而不是 ip_locked（同一台手机换 Wi-Fi/换网段必须还能重连）。
         if (lanAddress is not null)
         {
+            using var strangerDevice = new TestDevice("另一网段的陌生设备");
             await using var otherIp = WssTestClient.Create(certificateFingerprint);
-            await otherIp.ConnectAsync(Url("127.0.0.1", server.GetStatus().Token), ShortWait);
+            await otherIp.ConnectAsync(Url("127.0.0.1", null), ShortWait);
+            var otherChallenge = TestAuth.ReceiveChallenge(otherIp, ShortWait);
+            await otherIp.SendTextAsync(strangerDevice.BuildAuthRequest(otherChallenge!.Sid, otherChallenge.Nonce));
             var (code, message, _) = otherIp.ReceiveRejection(ShortWait);
-            reporter.Equal($"绑定 {lanAddress} 后 127.0.0.1 被拒绝", "ip_locked", code);
+            reporter.Equal("换源地址的未信任连接返回 key_unknown（不再有 ip_locked）", "key_unknown", code);
             reporter.Info($"拒绝理由：{message}");
         }
         else
         {
-            reporter.Skip("IP 绑定端到端验证", "本机没有可用的局域网 IPv4 地址");
+            reporter.Skip("跨网段重连验证", "本机没有可用的局域网 IPv4 地址");
         }
 
         await client.CloseAsync();
@@ -795,18 +1327,61 @@ public static class Program
                 using var document = JsonDocument.Parse(File.ReadAllText(reportPath));
                 var root = document.RootElement;
 
-                reporter.Check("窗口中服务处于运行状态", root.GetProperty("isRunning").GetBoolean());
+                reporter.Check("窗口中服务处于运行状态", root.GetProperty("isRunning").GetBoolean(),
+                    root.GetProperty("isRunning").GetBoolean()
+                        ? "监听中"
+                        : string.Join(" / ", root.GetProperty("log").EnumerateArray()
+                            .Select(e => e.GetString())
+                            .TakeLast(3)));
                 reporter.Check("窗口渲染了二维码", root.GetProperty("qrBytes").GetInt32() > 100,
                     $"{root.GetProperty("qrBytes").GetInt32()} 字节");
+
+                // A layout regression once left the QR code much smaller than it was rendered (the panel
+                // looked like it only held the top half of the code). No purely numeric assertion can
+                // see that, so the window measures the drawn geometry and reports it here.
+                var qrWidth = root.GetProperty("qrWidth").GetDouble();
+                var qrHeight = root.GetProperty("qrHeight").GetDouble();
+                var qrTop = root.GetProperty("qrTop").GetDouble();
+                var qrBottom = root.GetProperty("qrBottom").GetDouble();
+                var clientHeight = root.GetProperty("qrClientHeight").GetDouble();
+                var qrNaturalWidth = root.GetProperty("qrNaturalWidth").GetDouble();
+                var qrNaturalHeight = root.GetProperty("qrNaturalHeight").GetDouble();
+                var pixelsPerModule = root.GetProperty("qrPixelsPerModule").GetInt32();
+                var modules = root.GetProperty("qrModuleCount").GetInt32();
+                reporter.Check(
+                    "二维码完整显示在窗口内（没有被裁掉）",
+                    root.GetProperty("qrFullyVisible").GetBoolean(),
+                    $"二维码 {qrWidth:F0}×{qrHeight:F0}，纵向 {qrTop:F0}..{qrBottom:F0}，客户区高 {clientHeight:F0}");
+                reporter.Check(
+                    "二维码按原尺寸渲染（没有被缩放/挤压）",
+                    root.GetProperty("qrNaturalSize").GetBoolean(),
+                    $"绘制 {qrWidth:F0}×{qrHeight:F0}，原始 {qrNaturalWidth:F0}×{qrNaturalHeight:F0}");
+                reporter.Check(
+                    "二维码按整数像素/模块渲染（模块大小一致，便于扫码）",
+                    pixelsPerModule >= 3 && Math.Abs(qrNaturalWidth - modules * pixelsPerModule) < 0.5,
+                    $"{modules} 模块 × {pixelsPerModule} 像素 = {qrNaturalWidth:F0}px");
 
                 var reportedUrl = root.GetProperty("url").GetString() ?? string.Empty;
                 reporter.Check("窗口内的连接地址形如 wss://<ip>:<port>/ws?token=",
                     reportedUrl.StartsWith("wss://", StringComparison.Ordinal) &&
                     reportedUrl.Contains($":{port}/ws?token=", StringComparison.Ordinal),
                     reportedUrl);
+                reporter.Check("窗口内的连接地址带 sid 与 fp（手机据此固定证书）",
+                    reportedUrl.Contains("sid=", StringComparison.Ordinal) &&
+                    reportedUrl.Contains("fp=", StringComparison.Ordinal),
+                    reportedUrl);
 
                 var fingerprint = root.GetProperty("certificateFingerprint").GetString() ?? string.Empty;
                 reporter.Check("窗口展示证书指纹", fingerprint.Split(':').Length == 32);
+
+                reporter.Check("窗口暴露服务器身份 sid",
+                    (root.GetProperty("sid").GetString() ?? string.Empty).Length == 22);
+                reporter.Check("窗口暴露证书固定值 fp",
+                    (root.GetProperty("certificatePin").GetString() ?? string.Empty).Length == 22);
+                reporter.Equal("窗口报告协议版本 2", 2, root.GetProperty("protocolVersion").GetInt32());
+                reporter.Check("窗口读取到主屏尺寸",
+                    root.GetProperty("screenWidth").GetInt32() > 0 && root.GetProperty("screenHeight").GetInt32() > 0,
+                    $"{root.GetProperty("screenWidth").GetInt32()}×{root.GetProperty("screenHeight").GetInt32()}");
             }
         }
         catch (Exception ex)

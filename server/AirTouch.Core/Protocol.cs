@@ -6,6 +6,7 @@ public enum MessageKind
 {
     Unknown = 0,
     Move,
+    MoveTo,
     Click,
     Scroll,
     Reset,
@@ -14,7 +15,23 @@ public enum MessageKind
     Hello,
     Ping,
     Pong,
+    AuthReq,
+    DiagBegin,
+    DiagReport,
 }
+
+/// <summary>The client's own measurement of one communication test run (docs/PROTOCOL.md §2.3).</summary>
+public sealed record ClientDiagReport(
+    string TestKind,
+    string Mode,
+    int Planned,
+    int Sent,
+    int FirstSeq,
+    int LastSeq,
+    long ElapsedMs,
+    int TargetHz,
+    int CircleMs,
+    int MaxSendGapMs);
 
 /// <summary>A decoded control frame. Unknown frames decode to <see cref="MessageKind.Unknown"/>.</summary>
 public sealed class ControlMessage
@@ -27,7 +44,15 @@ public sealed class ControlMessage
 
     public int Dy { get; init; }
 
+    /// <summary>Absolute target of a <c>moveto</c> frame (primary screen pixels).</summary>
+    public int X { get; init; }
+
+    public int Y { get; init; }
+
     public int Amount { get; init; }
+
+    /// <summary>Optional diagnostic sequence number carried by <c>move</c>/<c>moveto</c> frames.</summary>
+    public int? Seq { get; init; }
 
     public MouseButton Button { get; init; } = MouseButton.Left;
 
@@ -40,6 +65,24 @@ public sealed class ControlMessage
     public string? DeviceName { get; init; }
 
     public string? AppVersion { get; init; }
+
+    // ---- auth_req (docs/PROTOCOL.md §1.2) ----
+
+    public int AuthVersion { get; init; }
+
+    public string? Token { get; init; }
+
+    public string? KeyId { get; init; }
+
+    public string? PublicKey { get; init; }
+
+    public string? Signature { get; init; }
+
+    public long Timestamp { get; init; }
+
+    // ---- diag_begin / diag_report ----
+
+    public ClientDiagReport? Diag { get; init; }
 }
 
 /// <summary>
@@ -50,17 +93,45 @@ public static class Protocol
 {
     public const string WebSocketPath = "/ws";
 
+    /// <summary>Protocol revision implemented by this build (docs/PROTOCOL.md).</summary>
+    public const int Version = 2;
+
     /// <summary>Bounds from the protocol document; values outside are clamped, not rejected.</summary>
     public const int MaxMoveStep = 4096;
 
     public const int MaxScrollAmount = 120;
 
+    /// <summary>Hard cap on the absolute target of a <c>moveto</c>; anything larger is clamped.</summary>
+    public const int MaxAbsoluteCoordinate = 32767;
+
     /// <summary>
-    /// Builds the pairing URL that goes into the QR code / <c>welcome</c> frame. <paramref name="useTls"/>
-    /// is always true in production; the plaintext form exists only for local diagnostics.
+    /// Builds the pairing URL that goes into the QR code. <paramref name="sid"/> and
+    /// <paramref name="pin"/> let a freshly scanned phone verify the certificate <em>before</em> the
+    /// first byte of application data (no trust-on-first-use window), and let it key its pin to the
+    /// server identity instead of the IP address. <paramref name="useTls"/> is always true in production.
     /// </summary>
-    public static string BuildUrl(string address, int port, string token, bool useTls = true) =>
-        $"{(useTls ? "wss" : "ws")}://{address}:{port}{WebSocketPath}?token={token}";
+    public static string BuildUrl(
+        string address,
+        int port,
+        string? token = null,
+        string? sid = null,
+        string? pin = null,
+        bool useTls = true)
+    {
+        var scheme = useTls ? "wss" : "ws";
+        var url = $"{scheme}://{address}:{port}{WebSocketPath}?token={token}";
+        if (!string.IsNullOrEmpty(sid))
+        {
+            url += $"&sid={sid}";
+        }
+
+        if (!string.IsNullOrEmpty(pin))
+        {
+            url += $"&fp={pin}";
+        }
+
+        return url;
+    }
 
     /// <summary>Parses a client text frame. Returns null when the payload is not a JSON object.</summary>
     public static ControlMessage? Parse(string json)
@@ -98,6 +169,19 @@ public static class Protocol
                     RawType = type,
                     Dx = Math.Clamp(GetInt(root, "dx"), -MaxMoveStep, MaxMoveStep),
                     Dy = Math.Clamp(GetInt(root, "dy"), -MaxMoveStep, MaxMoveStep),
+                    Seq = GetOptionalInt(root, "seq"),
+                };
+            }
+
+            if (type.Equals("moveto", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ControlMessage
+                {
+                    Kind = MessageKind.MoveTo,
+                    RawType = type,
+                    X = Math.Clamp(GetInt(root, "x"), -MaxAbsoluteCoordinate, MaxAbsoluteCoordinate),
+                    Y = Math.Clamp(GetInt(root, "y"), -MaxAbsoluteCoordinate, MaxAbsoluteCoordinate),
+                    Seq = GetOptionalInt(root, "seq"),
                 };
             }
 
@@ -172,20 +256,159 @@ public static class Protocol
                 return new ControlMessage { Kind = MessageKind.Pong, RawType = type };
             }
 
+            if (type.Equals("auth_req", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ControlMessage
+                {
+                    Kind = MessageKind.AuthReq,
+                    RawType = type,
+                    AuthVersion = GetInt(root, "auth_v"),
+                    Token = GetString(root, "token"),
+                    KeyId = GetString(root, "keyId"),
+                    PublicKey = GetString(root, "pubKey"),
+                    Signature = GetString(root, "sign"),
+                    Timestamp = GetLong(root, "ts"),
+                    DeviceName = GetString(root, "deviceName"),
+                    AppVersion = GetString(root, "appVersion"),
+                };
+            }
+
+            if (type.Equals("diag_begin", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ControlMessage
+                {
+                    Kind = MessageKind.DiagBegin,
+                    RawType = type,
+                    Diag = ReadDiag(root),
+                };
+            }
+
+            if (type.Equals("diag_report", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ControlMessage
+                {
+                    Kind = MessageKind.DiagReport,
+                    RawType = type,
+                    Diag = ReadDiag(root),
+                };
+            }
+
             return new ControlMessage { Kind = MessageKind.Unknown, RawType = type };
         }
     }
 
-    public static string BuildWelcome(string serverVersion, string serverAddress, int port, string? boundAddress, long maxFileSize, int chunkSize) =>
+    private static ClientDiagReport ReadDiag(JsonElement root) =>
+        new(
+            TestKind: GetString(root, "testKind") ?? "circle",
+            Mode: GetString(root, "mode") ?? "abs",
+            Planned: GetInt(root, "planned"),
+            Sent: GetInt(root, "sent"),
+            FirstSeq: GetInt(root, "firstSeq"),
+            LastSeq: GetInt(root, "lastSeq"),
+            ElapsedMs: GetLong(root, "elapsedMs"),
+            TargetHz: GetInt(root, "targetHz"),
+            CircleMs: GetInt(root, "circleMs"),
+            MaxSendGapMs: GetInt(root, "maxSendGapMs"));
+
+    /// <summary>Server → client: the single-use nonce the client must sign (docs/PROTOCOL.md §1.2).</summary>
+    public static string BuildAuthChallenge(string sid, string nonce, long serverTime, int expiresInSeconds, string mode) =>
+        Serialize(new Dictionary<string, object?>
+        {
+            ["type"] = "auth_challenge",
+            ["auth_v"] = AuthCrypto.AuthVersion,
+            ["sid"] = sid,
+            ["nonce"] = nonce,
+            ["serverTime"] = serverTime,
+            ["expiresIn"] = expiresInSeconds,
+            ["mode"] = mode,
+        });
+
+    public static string BuildWelcome(
+        string serverVersion,
+        string serverAddress,
+        int port,
+        string sid,
+        long maxFileSize,
+        int chunkSize,
+        int screenWidth,
+        int screenHeight,
+        int displayHz,
+        string? deviceName,
+        string? keyId,
+        string authMode,
+        int trustedDeviceCount) =>
         Serialize(new Dictionary<string, object?>
         {
             ["type"] = "welcome",
+            ["protocolVersion"] = Version,
             ["serverVersion"] = serverVersion,
             ["serverIp"] = serverAddress,
             ["port"] = port,
-            ["boundIp"] = boundAddress,
+            ["sid"] = sid,
             ["maxFileSize"] = maxFileSize,
             ["chunkSize"] = chunkSize,
+            ["screenWidth"] = screenWidth,
+            ["screenHeight"] = screenHeight,
+            ["displayHz"] = displayHz,
+            ["deviceName"] = deviceName,
+            ["keyId"] = keyId,
+            ["authMode"] = authMode,
+            ["trustedCount"] = trustedDeviceCount,
+        });
+
+    /// <summary>Server → client: what the PC measured during a communication test.</summary>
+    public static string BuildDiagReport(
+        string testKind,
+        string mode,
+        int planned,
+        int received,
+        int firstSeq,
+        int lastSeq,
+        int lost,
+        int duplicated,
+        int outOfOrder,
+        int maxGapMs,
+        int meanGapMs,
+        long durationMs,
+        int sendInputFailures,
+        int startX,
+        int startY,
+        int endX,
+        int endY,
+        int screenWidth,
+        int screenHeight,
+        int cursorUpdates,
+        int cursorPollHz,
+        int cursorMaxGapMs,
+        int displayHz) =>
+        Serialize(new Dictionary<string, object?>
+        {
+            ["type"] = "diag_report",
+            ["testKind"] = testKind,
+            ["mode"] = mode,
+            ["planned"] = planned,
+            ["received"] = received,
+            ["firstSeq"] = firstSeq,
+            ["lastSeq"] = lastSeq,
+            ["lost"] = lost,
+            ["duplicated"] = duplicated,
+            ["outOfOrder"] = outOfOrder,
+            ["maxGapMs"] = maxGapMs,
+            ["meanGapMs"] = meanGapMs,
+            ["durationMs"] = durationMs,
+            ["sendInputFailures"] = sendInputFailures,
+            ["startX"] = startX,
+            ["startY"] = startY,
+            ["endX"] = endX,
+            ["endY"] = endY,
+            ["screenWidth"] = screenWidth,
+            ["screenHeight"] = screenHeight,
+            // 光标在测试期间"真正动了几次"（GetCursorPos 采样），以及屏幕刷新率。
+            // targetHz 与 received 都是"发送/到达"侧的数字，只有这两个是"看得见"侧的数字。
+            ["cursorUpdates"] = cursorUpdates,
+            ["cursorPollHz"] = cursorPollHz,
+            ["cursorMaxGapMs"] = cursorMaxGapMs,
+            ["displayHz"] = displayHz,
         });
 
     public static string BuildFileHeader(string fileName, long fileSize, string fileId) =>
@@ -300,4 +523,8 @@ public static class Protocol
             _ => (int)value,
         };
     }
+
+    /// <summary>Like <see cref="GetInt"/> but keeps "field absent" distinguishable from an explicit 0.</summary>
+    private static int? GetOptionalInt(JsonElement root, string name) =>
+        root.TryGetProperty(name, out _) ? GetInt(root, name) : null;
 }

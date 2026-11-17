@@ -5,24 +5,41 @@ import java.util.Locale
 /**
  * 配对地址（二维码内容 / 手动输入）的解析结果。
  *
- * 协议 §1.1：[wss://{IP}:{PORT}/ws?token={TOKEN}]
- * - 扫码后必须「原样」使用 host/port/path/query，客户端不得改写；
+ * 协议 §1.1 v2：`wss://{IP}:{PORT}/ws?token={UUID}&sid={SID}&fp={FP}`
+ * - 扫码后必须「原样」使用 host/port/path，客户端不得改写；
  * - PORT 缺省为 8443；
- * - token 必须非空。
+ * - `token` 是**一次性配对票据**：只在第一次配对时用一次，用完即废；
+ * - `sid` 是这台电脑的稳定身份，`fp` 是它的证书固定值（`base64url(SHA-256(SPKI)[0..16])`）。
+ *   两者都不含秘密，可以长期保存：以后重连既不需要 token，也不怕 IP 变化。
  *
- * 只接受 wss（协议 §4：仅 wss://，明文一律拒绝）。
+ * 只接受 wss（协议 §4：明文一律拒绝）。
  */
 data class PairingUri(
     val host: String,
     val port: Int,
     val path: String,
-    val token: String
+    val token: String,
+    val sid: String? = null,
+    val fp: String? = null
 ) {
 
-    /** 重建用于 OkHttp 的 URL 字符串。IPv6 字面量会补回方括号，否则 URL 无法解析。 */
+    /** 是否带着一次性配对票据（扫码得到的一定是 true）。 */
+    val isPairing: Boolean get() = token.isNotEmpty()
+
+    /**
+     * 重建用于 OkHttp 的 URL。IPv6 字面量会补回方括号，否则 URL 无法解析。
+     * 免扫码重连（[token] 为空）时**不带 token 参数**：服务端据此进入「重连模式」，
+     * 只用设备密钥认证，不再碰那个一次性票据。
+     */
     fun toUrl(): String {
         val h = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
-        return "wss://$h:$port$path?token=$token"
+        val sb = StringBuilder("wss://").append(h).append(':').append(port).append(path)
+        val params = ArrayList<String>(3)
+        if (token.isNotEmpty()) params.add("$PARAM_TOKEN=$token")
+        if (!sid.isNullOrEmpty()) params.add("$PARAM_SID=$sid")
+        if (!fp.isNullOrEmpty()) params.add("$PARAM_FP=$fp")
+        if (params.isNotEmpty()) sb.append('?').append(params.joinToString("&"))
+        return sb.toString()
     }
 
     /** 用于日志/界面的简短描述，不含 token */
@@ -32,12 +49,16 @@ data class PairingUri(
 
         const val DEFAULT_PORT = 8443
         const val EXPECTED_PATH = "/ws"
+        const val PARAM_TOKEN = "token"
+        const val PARAM_SID = "sid"
+        const val PARAM_FP = "fp"
 
         /**
          * 解析二维码文本或手动输入的 URL。
          *
          * 支持的输入形式（宽松解析，方便手动输入）：
-         * - `wss://192.168.1.5:8443/ws?token=xxx`
+         * - `wss://192.168.1.5:8443/ws?token=xxx&sid=yyy&fp=zzz`（v2 二维码）
+         * - `wss://192.168.1.5:8443/ws?token=xxx`（v1 二维码，sid/fp 缺失时退回 TOFU）
          * - `wss://192.168.1.5/ws?token=xxx`（端口缺省 8443）
          * 非法输入（非 wss、host 为空、path 不是 /ws、token 为空）返回 null。
          */
@@ -77,10 +98,17 @@ data class PairingUri(
             val path = uri.path ?: return null
             if (!path.equals(EXPECTED_PATH, ignoreCase = false)) return null
 
-            val token = extractToken(uri.rawQuery)
+            val query = uri.rawQuery
+            val token = param(query, PARAM_TOKEN)
             if (token.isEmpty()) return null
 
-            return PairingUri(host = host, port = port, path = path, token = token)
+            val sid = param(query, PARAM_SID).ifEmpty { null }
+            if (sid != null && !isValidSid(sid)) return null
+
+            val fp = param(query, PARAM_FP).ifEmpty { null }
+            if (fp != null && !isValidPin(fp)) return null
+
+            return PairingUri(host = host, port = port, path = path, token = token, sid = sid, fp = fp)
         }
 
         /**
@@ -140,19 +168,28 @@ data class PairingUri(
         }
 
         /**
-         * 从 rawQuery 中取出 token。手工切分而不是用 Uri.parse()，
-         * 因为 java.net.URI 的 getQueryParameters() 已废弃（依赖已废弃的 java.net.URLDecoder 行为）。
+         * 免扫码重连用的地址：不带 token，只带服务器身份与固定值。
+         * 服务端收到没有 token 的连接会进入「重连模式」，只验证设备密钥。
          */
-        private fun extractToken(rawQuery: String?): String {
+        fun resume(host: String, port: Int, sid: String?, fp: String?): PairingUri =
+            PairingUri(host = host, port = port, path = EXPECTED_PATH, token = "", sid = sid, fp = fp)
+
+        /** sid 是 16 字节的 base64url（22 个字符）。 */
+        fun isValidSid(sid: String): Boolean = AuthCrypto.fromBase64Url(sid)?.size == 16
+
+        /** fp 是 16 字节的 base64url（22 个字符）。 */
+        fun isValidPin(fp: String): Boolean = AuthCrypto.fromBase64Url(fp)?.size == 16
+
+        /** 从 rawQuery 中取出某个参数。手工切分而不是用 Uri.parse()。 */
+        private fun param(rawQuery: String?, name: String): String {
             if (rawQuery.isNullOrEmpty()) return ""
             for (pair in rawQuery.split('&')) {
                 if (pair.isEmpty()) continue
                 val eq = pair.indexOf('=')
                 val key = if (eq >= 0) pair.substring(0, eq) else pair
-                if (!key.equals("token", ignoreCase = true)) continue
+                if (!key.equals(name, ignoreCase = true)) continue
                 if (eq < 0) return ""
-                val value = pair.substring(eq + 1)
-                return urlDecode(value).trim()
+                return urlDecode(pair.substring(eq + 1)).trim()
             }
             return ""
         }
@@ -188,7 +225,7 @@ data class PairingUri(
             return String(bytes.toByteArray(), Charsets.UTF_8)
         }
 
-        /** 供界面显示的小工具：host 小写化（指纹 key 用） */
+        /** 供界面显示的小工具：host 小写化（旧版按 host 固定指纹时用） */
         fun normalizeHostKey(host: String): String = host.trim().lowercase(Locale.US)
     }
 }

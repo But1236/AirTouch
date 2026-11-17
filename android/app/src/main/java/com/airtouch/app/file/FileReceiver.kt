@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
+import androidx.core.content.FileProvider
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -33,7 +34,17 @@ class FileReceiver(context: Context) {
 
     interface Callback {
         fun onProgress(fileName: String, received: Long, total: Long)
-        fun onCompleted(fileName: String, savedPath: String, bytes: Long)
+
+        /**
+         * 接收完成。
+         * @param savedPath 给用户看的存放位置，例如「内部存储/Download/报告.pdf」。
+         *   电脑 → 手机传输最容易让人困惑的就是「文件到底存哪了」，所以这里返回的是
+         *   **可以直接照着在文件管理器里找到**的路径，而不是 `Download/x.pdf` 这种相对串。
+         * @param viewUri 可交给系统「打开方式」的 URI（API ≥ 29 是 MediaStore 的 content://，
+         *   更低版本是 FileProvider 的 content://）；为 null 表示只能显示路径不能打开。
+         */
+        fun onCompleted(fileName: String, savedPath: String, bytes: Long, viewUri: Uri?)
+
         fun onFailed(fileName: String, reason: String)
     }
 
@@ -154,9 +165,9 @@ class FileReceiver(context: Context) {
             return
         }
         try {
-            val savedPath = publish(part)
+            val published = publish(part)
             deletePartIfExists(part)
-            cb.onCompleted(displayName, savedPath, receivedBytes)
+            cb.onCompleted(displayName, published.path, receivedBytes, published.uri)
         } catch (e: Exception) {
             deletePartIfExists(part)
             cb.onFailed(displayName, describe(e))
@@ -211,7 +222,10 @@ class FileReceiver(context: Context) {
 
     // ---------------- 落盘 ----------------
 
-    private fun publish(part: File): String {
+    /** 落盘结果：给用户看的路径 + 可打开它的 URI */
+    private data class Published(val path: String, val uri: Uri?)
+
+    private fun publish(part: File): Published {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             publishViaMediaStore(context, part)
         } else {
@@ -219,7 +233,7 @@ class FileReceiver(context: Context) {
         }
     }
 
-    private fun publishViaMediaStore(ctx: Context, part: File): String {
+    private fun publishViaMediaStore(ctx: Context, part: File): Published {
         val resolver = ctx.contentResolver
         // 注意：part.name 是 "<displayName>.part"，落盘时要用清洗后的 displayName
         val requestedName = uniqueDownloadName(displayName)
@@ -253,10 +267,17 @@ class FileReceiver(context: Context) {
             }
             throw e
         }
+
         // 重名时 MediaStore 会把实际文件名改成 "name (1).ext"，回读真实名字再拼路径，
         // 否则界面提示的路径与实际落盘位置不一致
-        return Environment.DIRECTORY_DOWNLOADS + "/" + readBackDisplayName(resolver, uri, requestedName)
+        val actualName = readBackDisplayName(resolver, uri, requestedName)
+        // 给用户看的完整位置：手机上「内部存储」就是文件管理器里的根目录
+        return Published(userFacingPath(actualName), uri)
     }
+
+    /** 「内部存储/Download/xxx」——用户可以直接照着在文件管理器里找 */
+    private fun userFacingPath(fileName: String): String =
+        "内部存储/" + Environment.DIRECTORY_DOWNLOADS + "/" + fileName
 
     /** 回读 MediaStore 记录里的真实文件名；查询失败时退回我们请求的名字 */
     private fun readBackDisplayName(resolver: android.content.ContentResolver, uri: Uri, fallback: String): String {
@@ -279,7 +300,7 @@ class FileReceiver(context: Context) {
         }
     }
 
-    private fun publishLegacy(part: File): String {
+    private fun publishLegacy(part: File): Published {
         @Suppress("DEPRECATION")
         val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         if (downloads == null) throw IllegalStateException("无法访问公共下载目录")
@@ -298,6 +319,7 @@ class FileReceiver(context: Context) {
         }
         val ctx = context
         try {
+            // 让文件立刻出现在系统「文件/图库」里，无需重启或等待媒体扫描
             MediaScannerConnection.scanFile(
                 ctx,
                 arrayOf(target.absolutePath),
@@ -307,7 +329,15 @@ class FileReceiver(context: Context) {
         } catch (e: Exception) {
             Log.w(TAG, "MediaScannerConnection.scanFile 失败", e)
         }
-        return target.absolutePath
+
+        // API < 29 写的是普通文件，要分享/打开得靠 FileProvider 换成 content://
+        val uri = try {
+            FileProvider.getUriForFile(ctx, ctx.packageName + FILE_PROVIDER_SUFFIX, target)
+        } catch (e: Exception) {
+            Log.w(TAG, "FileProvider 取 URI 失败（仍可显示路径）", e)
+            null
+        }
+        return Published(userFacingPath(target.name), uri)
     }
 
     private fun copy(input: java.io.InputStream, output: OutputStream) {
@@ -357,6 +387,9 @@ class FileReceiver(context: Context) {
         private const val TEMP_SUBDIR = "airtouch_tmp"
         private const val BUFFER_SIZE = 64 * 1024
         private const val PROGRESS_STEP = 512L * 1024L
+
+        /** 与 AndroidManifest 里 FileProvider 的 authorities 对应（`${applicationId}.fileprovider`） */
+        private const val FILE_PROVIDER_SUFFIX = ".fileprovider"
 
         /**
          * 文件名清洗（协议 §3.4 的客户端对应实现）：

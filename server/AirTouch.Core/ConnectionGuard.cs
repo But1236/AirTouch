@@ -1,26 +1,42 @@
 namespace AirTouch.Core;
 
+/// <summary>Why a connection was allowed to enter the authentication exchange.</summary>
+public enum AuthMode
+{
+    /// <summary>A valid one-time token was presented: this connection may register a new device key.</summary>
+    Pairing,
+
+    /// <summary>No token was presented: the connection may only resume with an already trusted key.</summary>
+    Resume,
+}
+
 /// <summary>Outcome of the pre-handshake authorization performed for every new connection.</summary>
 public enum AuthResult
 {
-    Allow,
+    AllowPairing,
+    AllowResume,
     BadPath,
     Banned,
     RateLimited,
     IpLocked,
     Busy,
+    TooManyPending,
     TokenInvalid,
     TokenExpired,
 }
 
 public sealed record AuthOutcome(AuthResult Result, string Message)
 {
-    public bool IsAllowed => Result == AuthResult.Allow;
+    public bool IsAllowed => Result is AuthResult.AllowPairing or AuthResult.AllowResume;
+
+    /// <summary>Mode for an allowed connection; meaningless for a rejection.</summary>
+    public AuthMode Mode => Result == AuthResult.AllowPairing ? AuthMode.Pairing : AuthMode.Resume;
 
     /// <summary>WebSocket close code sent back to the rejected peer.</summary>
     public int CloseCode => Result switch
     {
         AuthResult.Busy => 1013,          // "try again later"
+        AuthResult.TooManyPending => 1013,
         _ => 1008,                        // "policy violation"
     };
 
@@ -32,6 +48,7 @@ public sealed record AuthOutcome(AuthResult Result, string Message)
         AuthResult.RateLimited => "rate_limited",
         AuthResult.IpLocked => "ip_locked",
         AuthResult.Busy => "busy",
+        AuthResult.TooManyPending => "too_many_pending",
         AuthResult.TokenInvalid => "token_invalid",
         AuthResult.TokenExpired => "token_expired",
         _ => "ok",
@@ -39,40 +56,44 @@ public sealed record AuthOutcome(AuthResult Result, string Message)
 }
 
 /// <summary>
-/// Owns every connection-level security decision: the one-time pairing token, IP binding, the
-/// single-session rule, brute-force lockout and a coarse per-IP rate limit.
+/// Owns every connection-level security decision: the one-time pairing token, the pending-auth budget,
+/// brute-force lockout and a coarse per-IP rate limit.
 /// </summary>
 /// <remarks>
+/// <para>
+/// Protocol v2 replaced "the first IP that authenticates owns the PC" with "a device key owns the PC"
+/// (docs/PROTOCOL.md §4). Address binding could not survive a DHCP lease change and said nothing about
+/// <em>which</em> phone was connecting; a signature over a server nonce does both. The guard therefore
+/// no longer gates on the peer address: an unauthenticated socket is not rejected outright but admitted
+/// as <em>pending</em>, with a hard auth deadline and a small concurrency budget, and it only becomes the
+/// active session after the key proof succeeds.
+/// </para>
+/// <para>
 /// Deliberately free of networking types so the policy can be unit tested and fuzzed directly.
 /// All members are safe to call from Fleck's worker threads.
+/// </para>
 /// </remarks>
 public sealed class ConnectionGuard
 {
     public const string WebSocketPath = "/ws";
 
+    /// <summary>How many already-consumed tokens are remembered for the <c>token_expired</c> answer.</summary>
+    private const int ConsumedTokenMemory = 8;
+
     private readonly object _gate = new();
     private readonly AirTouchOptions _options;
     private readonly IAirTouchLog _log;
     private readonly Dictionary<string, int> _tokenFailures = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _authFailures = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _bannedAddresses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<DateTimeOffset>> _attempts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Queue<string> _consumedTokens = new();
 
     private string _token;
     private bool _tokenConsumed;
-
-    /// <summary>
-    /// The last token that was actually consumed by a successful pairing.
-    /// </summary>
-    /// <remarks>
-    /// Disconnecting rotates the token, so without remembering the consumed value a phone that drops
-    /// off the Wi-Fi and reconnects with its (now stale) token would look exactly like an attacker
-    /// guessing: it would be counted as a failed attempt and a couple of drops would permanently ban
-    /// the legitimate device. Keeping the value lets the replay be answered with
-    /// <see cref="AuthResult.TokenExpired"/> without touching the brute-force budget, which is what
-    /// docs/PROTOCOL.md §4 promises. Guessing is unaffected: only this exact value is exempt.
-    /// </remarks>
-    private string? _lastConsumedToken;
-    private string? _boundAddress;
+    private int _pending;
+    private string? _activeKeyId;
+    private string? _activeDeviceName;
     private string? _activeAddress;
 
     public ConnectionGuard(AirTouchOptions options, IAirTouchLog? log = null)
@@ -96,6 +117,10 @@ public sealed class ConnectionGuard
         }
     }
 
+    /// <summary>
+    /// True once a pairing has consumed a token since the last manual rotation or reset (the current
+    /// token itself is always fresh — <see cref="MarkPaired"/> rotates immediately). Display only.
+    /// </summary>
     public bool TokenConsumed
     {
         get
@@ -107,14 +132,25 @@ public sealed class ConnectionGuard
         }
     }
 
-    /// <summary>IP permanently allowed to talk to this server, or null while unpaired.</summary>
-    public string? BoundAddress
+    /// <summary>Key id of the device that currently owns the session, or null when nobody is connected.</summary>
+    public string? ActiveKeyId
     {
         get
         {
             lock (_gate)
             {
-                return _boundAddress;
+                return _activeKeyId;
+            }
+        }
+    }
+
+    public string? ActiveDeviceName
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _activeDeviceName;
             }
         }
     }
@@ -136,7 +172,19 @@ public sealed class ConnectionGuard
         {
             lock (_gate)
             {
-                return _activeAddress is not null;
+                return _activeKeyId is not null;
+            }
+        }
+    }
+
+    /// <summary>Number of sockets currently waiting for their <c>auth_req</c>.</summary>
+    public int PendingCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _pending;
             }
         }
     }
@@ -160,11 +208,19 @@ public sealed class ConnectionGuard
         }
     }
 
+    public int AuthFailuresFor(string address)
+    {
+        lock (_gate)
+        {
+            return _authFailures.TryGetValue(address, out var count) ? count : 0;
+        }
+    }
+
     public static string NewToken() => Guid.NewGuid().ToString("D");
 
     /// <summary>
-    /// Evaluates a new connection attempt. Checks run in a fixed order so the client always gets the
-    /// most specific reason: path, ban, rate limit, IP binding, single-session, then the token.
+    /// Evaluates a new connection attempt. Checks run in a fixed order so the client always gets the most
+    /// specific reason: path, ban, rate limit, pending budget, then the token.
     /// </summary>
     public AuthOutcome TryAuthorize(
         string clientAddress,
@@ -199,17 +255,10 @@ public sealed class ConnectionGuard
                 return new AuthOutcome(AuthResult.RateLimited, "连接过于频繁，请稍后再试");
             }
 
-            if (_boundAddress is not null &&
-                !string.Equals(_boundAddress, normalized, StringComparison.OrdinalIgnoreCase))
+            if (_pending >= _options.MaxPendingSockets)
             {
-                _log.Warn($"拒绝未绑定 IP：{normalized}（当前绑定 {_boundAddress}）");
-                return new AuthOutcome(AuthResult.IpLocked, $"本机已绑定 {_boundAddress}，拒绝其他设备接入");
-            }
-
-            if (_activeAddress is not null)
-            {
-                _log.Warn($"拒绝重复连接：{normalized}（已有活动连接）");
-                return new AuthOutcome(AuthResult.Busy, "已有设备处于连接状态");
+                _log.Warn($"拒绝连接：等待认证的连接已达上限 {_options.MaxPendingSockets}（{normalized}）");
+                return new AuthOutcome(AuthResult.TooManyPending, "服务器正忙，请稍后重试");
             }
 
             // The token arrives in the query string (the QR code format) or, as a fallback, in an
@@ -218,15 +267,14 @@ public sealed class ConnectionGuard
 
             if (string.IsNullOrEmpty(presented))
             {
-                stateChanged = RegisterFailure(normalized, "缺少 token");
-                outcome = new AuthOutcome(AuthResult.TokenInvalid, "缺少 token");
+                // No token at all: the normal "I am already paired" path. It is admitted as a pending
+                // connection and must prove possession of a trusted key before anything else.
+                outcome = new AuthOutcome(AuthResult.AllowResume, "等待设备密钥认证");
             }
             else if (IsConsumedToken(presented))
             {
-                // A replay of the already-consumed token is not a brute-force attempt: it is the
-                // normal "app reconnected after pairing" case, so it must not ban the phone. This
-                // stays true after the token has been rotated on disconnect, which is the case that
-                // actually happens when the phone loses Wi-Fi.
+                // A replay of an already-consumed token is not a brute-force attempt: it is what a phone
+                // does when it still remembers a stale QR. It must not ban the device.
                 _log.Warn($"拒绝重放已销毁的 token：{normalized}");
                 outcome = new AuthOutcome(AuthResult.TokenExpired, "token 已失效，请重新扫码");
             }
@@ -241,7 +289,12 @@ public sealed class ConnectionGuard
             }
             else
             {
-                outcome = new AuthOutcome(AuthResult.Allow, "ok");
+                outcome = new AuthOutcome(AuthResult.AllowPairing, "ok");
+            }
+
+            if (outcome.IsAllowed)
+            {
+                _pending++;
             }
         }
 
@@ -253,67 +306,182 @@ public sealed class ConnectionGuard
         return outcome;
     }
 
-    /// <summary>
-    /// True when <paramref name="presented"/> is the token that a previous pairing already consumed —
-    /// either the current one (still active) or, after a disconnect rotated it, the remembered value.
-    /// </summary>
+    /// <summary>True when <paramref name="presented"/> is a token a previous pairing already consumed.</summary>
+    /// <remarks>
+    /// Only the replay memory is consulted. Comparing against <see cref="TokenConsumed"/> and the
+    /// <em>current</em> token would be wrong: <see cref="MarkPaired"/> rotates immediately, so the
+    /// freshly issued token is by definition not consumed and must be accepted at once — otherwise the
+    /// QR code on screen would be dead for the next phone.
+    /// </remarks>
     private bool IsConsumedToken(string presented)
     {
-        if (_tokenConsumed && FixedTimeEquals(presented, _token))
+        foreach (var consumed in _consumedTokens)
         {
-            return true;
+            if (FixedTimeEquals(presented, consumed))
+            {
+                return true;
+            }
         }
 
-        return _lastConsumedToken is not null && FixedTimeEquals(presented, _lastConsumedToken);
+        return false;
     }
 
-    /// <summary>Consumes the one-time token and binds the IP. Called once authorization succeeded.</summary>
-    public void MarkConnected(string clientAddress)
+    /// <summary>
+    /// Re-checks the pairing token carried inside the <c>auth_req</c> frame. The query-string token was
+    /// already validated when the socket opened, but it may have been consumed by another phone in the
+    /// meantime, so the check has to happen again at the moment the device key is registered.
+    /// </summary>
+    public AuthOutcome CheckPairingToken(string clientAddress, string? presented)
+    {
+        var normalized = Normalize(clientAddress);
+        var stateChanged = false;
+        AuthOutcome outcome;
+
+        lock (_gate)
+        {
+            if (string.IsNullOrEmpty(presented))
+            {
+                RegisterFailure(normalized, "auth_req 缺少 token");
+                stateChanged = true;
+                outcome = _bannedAddresses.Contains(normalized)
+                    ? new AuthOutcome(AuthResult.Banned, "token 连续校验失败，该 IP 已被封禁")
+                    : new AuthOutcome(AuthResult.TokenInvalid, "auth_req 缺少 token");
+            }
+            else if (IsConsumedToken(presented))
+            {
+                outcome = new AuthOutcome(AuthResult.TokenExpired, "token 已被使用，请重新扫码");
+            }
+            else if (!FixedTimeEquals(presented, _token))
+            {
+                RegisterFailure(normalized, "auth_req token 不匹配");
+                stateChanged = true;
+                outcome = _bannedAddresses.Contains(normalized)
+                    ? new AuthOutcome(AuthResult.Banned, "token 连续校验失败，该 IP 已被封禁")
+                    : new AuthOutcome(AuthResult.TokenInvalid, "token 校验失败");
+            }
+            else
+            {
+                outcome = new AuthOutcome(AuthResult.AllowPairing, "ok");
+            }
+        }
+
+        if (stateChanged)
+        {
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
+
+        return outcome;
+    }
+
+    /// <summary>Releases a pending slot when a socket goes away or finishes authenticating.</summary>
+    public void EndPending()
+    {
+        lock (_gate)
+        {
+            if (_pending > 0)
+            {
+                _pending--;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Consumes the one-time token after a successful pairing and immediately issues a fresh one, so the
+    /// QR code on screen stays usable for pairing the next device.
+    /// </summary>
+    public void MarkPaired(string clientAddress)
     {
         var normalized = Normalize(clientAddress);
 
         lock (_gate)
         {
+            if (!_tokenConsumed)
+            {
+                _consumedTokens.Enqueue(_token);
+                while (_consumedTokens.Count > ConsumedTokenMemory)
+                {
+                    _consumedTokens.Dequeue();
+                }
+            }
+
             _tokenConsumed = true;
-            _lastConsumedToken = _token;
+            _token = NewToken();
             _tokenFailures.Remove(normalized);
-            _boundAddress ??= normalized;
-            _activeAddress = normalized;
-            _log.Info($"设备已连接：{normalized}；token 已销毁，绑定 IP = {_boundAddress}");
+            _log.Info("配对成功：token 已销毁并生成新 token（屏幕上的二维码可继续用于配对下一台设备）");
         }
 
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
-    /// <summary>
-    /// Clears the active session and issues a fresh token. The IP binding intentionally survives so
-    /// the same phone can reconnect after a drop while every other device stays locked out.
-    /// </summary>
-    public void MarkDisconnected(string clientAddress)
+    /// <summary>Marks the session as owned by <paramref name="keyId"/> and clears that peer's failure counters.</summary>
+    public void MarkAuthenticated(string keyId, string? deviceName, string? address)
     {
-        var normalized = Normalize(clientAddress);
-        var rotated = false;
+        var normalized = Normalize(address);
 
         lock (_gate)
         {
-            if (_activeAddress is not null &&
-                string.Equals(_activeAddress, normalized, StringComparison.OrdinalIgnoreCase))
+            _activeKeyId = keyId;
+            _activeDeviceName = deviceName;
+            _activeAddress = address;
+            _authFailures.Remove(normalized);
+            _tokenFailures.Remove(normalized);
+            _log.Info($"设备认证通过：{deviceName ?? "未知设备"}（keyId {keyId}，来源 {normalized}）");
+        }
+
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Clears the active session when its socket goes away. The token is left untouched.</summary>
+    public void MarkDisconnected(string? address)
+    {
+        var disconnected = false;
+
+        lock (_gate)
+        {
+            if (_activeKeyId is not null)
             {
+                disconnected = true;
+                _activeKeyId = null;
+                _activeDeviceName = null;
                 _activeAddress = null;
-                _token = NewToken();
-                _tokenConsumed = false;
-                rotated = true;
-                _log.Info($"设备已断开：{normalized}；已生成新 token，二维码需刷新");
             }
         }
 
-        if (rotated)
+        if (disconnected)
         {
+            _log.Info($"设备已断开：{Normalize(address)}；token 保持不变（重连无需扫码）");
             Changed?.Invoke(this, EventArgs.Empty);
         }
     }
 
-    /// <summary>Issues a new token without touching the IP binding (used by the "刷新二维码" button).</summary>
+    /// <summary>
+    /// Records a failed key proof. Returns true when the peer just became banned. Kept separate from the
+    /// token counter so a phone with a skewed clock, or a phone whose key store was wiped, cannot ban
+    /// itself by retrying.
+    /// </summary>
+    public bool RegisterAuthFailure(string address, string reason)
+    {
+        var normalized = Normalize(address);
+        bool banned;
+
+        lock (_gate)
+        {
+            var failures = _authFailures.TryGetValue(normalized, out var existing) ? existing + 1 : 1;
+            _authFailures[normalized] = failures;
+            _log.Warn($"设备密钥认证失败 {failures}/{_options.MaxAuthFailures}：{normalized}（{reason}）");
+
+            banned = failures >= _options.MaxAuthFailures && _bannedAddresses.Add(normalized);
+            if (banned)
+            {
+                _log.Error($"IP {normalized} 连续 {failures} 次设备认证失败，已永久封禁");
+            }
+        }
+
+        Changed?.Invoke(this, EventArgs.Empty);
+        return banned;
+    }
+
+    /// <summary>Issues a new token without touching the trust list (used by the "刷新二维码" button).</summary>
     public string RotateToken()
     {
         lock (_gate)
@@ -326,20 +494,26 @@ public sealed class ConnectionGuard
         return Token;
     }
 
-    /// <summary>Full reset: unbind the IP, lift every ban, drop the failure counters, new token.</summary>
+    /// <summary>
+    /// Full reset of the connection-level state: new token, pending slots cleared, bans lifted.
+    /// The trusted device keys live in <see cref="DeviceKeyStore"/> and are revoked separately.
+    /// </summary>
     public void Reset(string reason)
     {
         lock (_gate)
         {
             _token = NewToken();
             _tokenConsumed = false;
-            _lastConsumedToken = null;
-            _boundAddress = null;
+            _consumedTokens.Clear();
+            _activeKeyId = null;
+            _activeDeviceName = null;
             _activeAddress = null;
             _bannedAddresses.Clear();
             _tokenFailures.Clear();
+            _authFailures.Clear();
             _attempts.Clear();
-            _log.Info($"安全状态已重置（{reason}）；已解除 IP 绑定与封禁，并生成新 token");
+            _pending = 0;
+            _log.Info($"安全状态已重置（{reason}）；已解除封禁并生成新 token");
         }
 
         Changed?.Invoke(this, EventArgs.Empty);
@@ -354,6 +528,7 @@ public sealed class ConnectionGuard
         {
             removed = _bannedAddresses.Remove(normalized);
             _tokenFailures.Remove(normalized);
+            _authFailures.Remove(normalized);
         }
 
         if (removed)
@@ -407,7 +582,7 @@ public sealed class ConnectionGuard
         return stamps.Count > _options.MaxConnectionAttemptsPerWindow;
     }
 
-    private static string Normalize(string address)
+    private static string Normalize(string? address)
     {
         if (string.IsNullOrWhiteSpace(address))
         {

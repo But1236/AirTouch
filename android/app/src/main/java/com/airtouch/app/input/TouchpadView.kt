@@ -195,8 +195,20 @@ class TouchpadView @JvmOverloads constructor(
     }
 
     private fun handleOneFingerMove(event: MotionEvent) {
-        val x = event.x
-        val y = event.y
+        // 关键修复（v2）：Android 会把短时间内的多个 MOVE 采样**合并**成一个事件
+        // （UI 线程一忙就合并得更多），只读 event.x/event.y 会把中间采样点整段丢掉，
+        // 现象就是「手指一直在动、光标却一顿一顿」。遍历历史采样点逐个累加，
+        // 光标轨迹才和手指一致，且总的位移量不会因为帧率下降而变少。
+        val history = event.historySize
+        if (history > 0) {
+            for (h in 0 until history) {
+                processOneFingerPoint(event.getHistoricalX(0, h), event.getHistoricalY(0, h))
+            }
+        }
+        processOneFingerPoint(event.x, event.y)
+    }
+
+    private fun processOneFingerPoint(x: Float, y: Float) {
         val rawDxPx = x - lastX
         val rawDyPx = y - lastY
         lastX = x
@@ -229,7 +241,17 @@ class TouchpadView @JvmOverloads constructor(
     }
 
     private fun handleTwoFingerMove(event: MotionEvent) {
-        val avgY = averageY(event)
+        // 与单指同理：合并事件里的历史采样点也要逐个吃掉，否则双指滚动同样会顿
+        val history = event.historySize
+        if (history > 0) {
+            for (h in 0 until history) {
+                processTwoFingerPoint(averageYAt(event, h))
+            }
+        }
+        processTwoFingerPoint(averageY(event))
+    }
+
+    private fun processTwoFingerPoint(avgY: Float) {
         val dyPx = avgY - twoFingerLastAvgY
         twoFingerLastAvgY = avgY
 
@@ -248,12 +270,19 @@ class TouchpadView @JvmOverloads constructor(
         }
     }
 
-    private fun averageY(event: MotionEvent): Float {
+    private fun averageY(event: MotionEvent): Float = averageYAt(event, -1)
+
+    /**
+     * 取前两根手指平均 Y。
+     * @param historicalIndex -1 表示取当前值，>= 0 表示取第 index 个历史采样点
+     */
+    private fun averageYAt(event: MotionEvent, historicalIndex: Int): Float {
         var sum = 0f
         val n = if (event.pointerCount > 2) 2 else event.pointerCount
         if (n <= 0) return 0f
         for (i in 0 until n) {
-            sum += event.getY(i)
+            sum += if (historicalIndex < 0) event.getY(i)
+            else event.getHistoricalY(i, historicalIndex)
         }
         return sum / n
     }

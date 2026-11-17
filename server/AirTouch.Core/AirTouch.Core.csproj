@@ -8,8 +8,7 @@
     <LangVersion>12</LangVersion>
     <RootNamespace>AirTouch.Core</RootNamespace>
     <AssemblyName>AirTouch.Core</AssemblyName>
-    <!-- No .NET 8 runtime is installed on the machine this was scaffolded on; the app targets
-         .NET 8 as specified but is allowed to run on a newer installed runtime. -->
+    <!-- Targets .NET 8 but may run on a newer installed runtime. -->
     <RollForward>LatestMajor</RollForward>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>

@@ -32,30 +32,59 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/status_line" />
 
+    <!--
+      fragment_container 的底边必须约束到 file_status_row（它是 ConstraintLayout 的直接子元素）。
+      早期版本写的是 @id/file_status，而那个 TextView 在 v2 里被移进了 file_status_row 内部：
+      ConstraintLayout 找不到这个直接子元素，约束被静默丢弃 → 容器一路铺到窗口底部，
+      被底部工具栏盖住，触摸板的灵敏度滑杆与提示文字全都藏在工具栏后面。
+    -->
     <FrameLayout
         android:id="@+id/fragment_container"
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:layout_margin="@dimen/at_space_s"
-        app:layout_constraintBottom_toTopOf="@id/file_status"
+        app:layout_constraintBottom_toTopOf="@id/file_status_row"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/tab_layout" />
 
-    <TextView
-        android:id="@+id/file_status"
-        style="@style/Widget.AirTouch.Label"
+    <!--
+      文件状态行：原来只有一个 TextView，收到文件后只提示一句「已保存到下载目录」，
+      用户仍然不知道去哪找、也打不开。现在补一个「打开」按钮，配合 FileReceiver 返回的
+      content:// URI，可以一键交给系统选择合适的应用打开。
+    -->
+    <LinearLayout
+        android:id="@+id/file_status_row"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:background="@color/at_surface"
-        android:paddingStart="@dimen/at_space_s"
-        android:paddingTop="@dimen/at_space_xs"
-        android:paddingEnd="@dimen/at_space_s"
-        android:paddingBottom="@dimen/at_space_xs"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
         android:visibility="gone"
         app:layout_constraintBottom_toTopOf="@id/toolbar"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent" />
+        app:layout_constraintStart_toStartOf="parent">
+
+        <TextView
+            android:id="@+id/file_status"
+            style="@style/Widget.AirTouch.Label"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:paddingStart="@dimen/at_space_s"
+            android:paddingTop="@dimen/at_space_xs"
+            android:paddingEnd="@dimen/at_space_s"
+            android:paddingBottom="@dimen/at_space_xs" />
+
+        <Button
+            android:id="@+id/button_open_file"
+            style="@style/Widget.AirTouch.ToolbarButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="@dimen/at_space_s"
+            android:text="@string/file_open"
+            android:visibility="gone" />
+    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/toolbar"

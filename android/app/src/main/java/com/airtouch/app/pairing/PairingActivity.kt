@@ -76,6 +76,7 @@ class PairingActivity : AppCompatActivity() {
 
         binding.buttonManualInput.setOnClickListener { showManualInputDialog() }
         binding.buttonResetPin.setOnClickListener { resetCertificatePins() }
+        binding.buttonReconnect.setOnClickListener { reconnectLast() }
         binding.buttonRetryPermission.setOnClickListener { requestCamera() }
         binding.buttonOpenSettings.setOnClickListener { openAppSettings() }
 
@@ -254,9 +255,31 @@ class PairingActivity : AppCompatActivity() {
     private fun persistAndConnect(uri: PairingUri) {
         settings.lastHost = uri.host
         settings.lastPort = uri.port
-        // token 持久化：见 SettingsStore 的说明（一次性 token + 局域网 + 私有目录）
+        // token 持久化：见 SettingsStore 的说明（一次性配对票据，仅用于展示/排错）
         settings.lastToken = uri.token
+        if (!uri.sid.isNullOrEmpty()) settings.lastSid = uri.sid
+        if (!uri.fp.isNullOrEmpty()) settings.lastPin = uri.fp
         updateLastConnected()
+        openControl(uri)
+    }
+
+    /**
+     * 免扫码重连：协议 §1.2 的重连模式不需要 token，只要设备私钥还在（AndroidKeyStore 里）
+     * 且电脑端仍然信任它，就能直接进控制页。
+     */
+    private fun reconnectLast() {
+        val host = settings.lastHost
+        if (host.isEmpty()) {
+            toast(getString(R.string.pairing_reconnect_none))
+            return
+        }
+
+        val sid = settings.lastSid.ifEmpty { null }
+        val fp = settings.lastPin.ifEmpty { null }
+        val uri = PairingUri.resume(host, settings.lastPort, sid, fp)
+
+        navigated = true
+        stopCamera()
         openControl(uri)
     }
 
@@ -265,6 +288,8 @@ class PairingActivity : AppCompatActivity() {
         intent.putExtra(ControlActivity.EXTRA_HOST, uri.host)
         intent.putExtra(ControlActivity.EXTRA_PORT, uri.port)
         intent.putExtra(ControlActivity.EXTRA_TOKEN, uri.token)
+        intent.putExtra(ControlActivity.EXTRA_SID, uri.sid)
+        intent.putExtra(ControlActivity.EXTRA_FP, uri.fp)
         startActivity(intent)
     }
 
@@ -337,7 +362,7 @@ class PairingActivity : AppCompatActivity() {
     // ---------------- 证书信任重置 ----------------
 
     private fun resetCertificatePins() {
-        val count = settings.certificatePinCount()
+        val count = settings.serverPinCount()
         if (count == 0) {
             toast(getString(R.string.pairing_pin_reset_empty))
             return
@@ -351,8 +376,16 @@ class PairingActivity : AppCompatActivity() {
         binding.lastConnected.text = if (host.isEmpty()) {
             getString(R.string.pairing_last_connected_none)
         } else {
-            getString(R.string.pairing_last_connected, "${host}:${settings.lastPort}")
+            val sid = settings.lastSid
+            if (sid.isEmpty()) {
+                getString(R.string.pairing_last_connected, "${host}:${settings.lastPort}")
+            } else {
+                getString(R.string.pairing_last_connected_identity, "${host}:${settings.lastPort}", sid)
+            }
         }
+
+        // 没有配对记录时「免扫码重连」没有意义，直接禁用，避免用户点了没反应
+        binding.buttonReconnect.isEnabled = host.isNotEmpty()
     }
 
     private fun toast(message: String) {

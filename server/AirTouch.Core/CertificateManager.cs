@@ -46,8 +46,8 @@ public static class CertificateManager
     /// </summary>
     /// <remarks>
     /// Schannel needs the private key in a real key container, so <c>UserKeySet</c> is the only mode
-    /// that can actually serve TLS. If writing to the user's key container is denied by policy (for
-    /// example inside a restricted sandbox) we fall back to an in-memory ephemeral key so the rest of
+    /// that can actually serve TLS. If writing to the user's key container is denied by policy we fall
+    /// back to an in-memory ephemeral key so the rest of
     /// the app still starts — but <see cref="AirTouchServer.Start"/> then refuses to open a TLS
     /// listener rather than pretending to be secure. See <see cref="ServerCertificate.IsEphemeralKey"/>.
     /// </remarks>

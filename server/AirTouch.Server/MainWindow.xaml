@@ -1,8 +1,8 @@
 <Window x:Class="AirTouch.Server.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="AirTouch 手机遥控服务端" Height="700" Width="1000"
-        MinHeight="600" MinWidth="900"
+        Title="AirTouch 手机遥控服务端" Height="760" Width="1060"
+        MinHeight="620" MinWidth="940"
         Background="#FF1B1C22" Foreground="#FFE8E8EE"
         WindowStartupLocation="CenterScreen"
         FontFamily="Microsoft YaHei UI, Segoe UI">
@@ -18,7 +18,7 @@
         <DockPanel Grid.Row="0" Margin="0,0,0,14">
             <TextBlock DockPanel.Dock="Right" VerticalAlignment="Bottom"
                        FontSize="12" Foreground="{StaticResource MutedTextBrush}"
-                       Text="wss 加密 · 一次性 Token · IP 绑定" />
+                       Text="单向 TLS · 一次性 Token · 设备密钥签名认证" />
             <TextBlock Text="AirTouch 服务端" FontSize="22" FontWeight="Bold" />
         </DockPanel>
 
@@ -31,33 +31,41 @@
 
             <!-- QR panel -->
             <Border Grid.Column="0" Style="{StaticResource Panel}" Margin="0,0,14,0">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Style="{StaticResource SectionTitle}"
-                               Text="手机扫码配对（仅本机可用的令牌）" />
+                <!--
+                  这一列只放二维码：二维码是手机上唯一需要「看清」的东西，任何和它抢高度的元素
+                  （按钮 / 地址框 / 说明文字）都会把它挤小甚至挤掉一半。所以这里用 Grid 让二维码独占
+                  剩余空间，外面再套一层 ScrollViewer —— 窗口被拉小时出现滚动条，而不是把二维码裁掉。
+                  二维码本身按整数「像素/模块」渲染并用 Stretch=None 原尺寸显示（见
+                  QrCodeRenderer.RenderPngForWidth），不会被缩放成模糊或变形的方块。
+                -->
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
 
-                    <Button DockPanel.Dock="Bottom" Style="{StaticResource ActionButton}"
-                            x:Name="BtnSaveQr" Content="保存二维码" Margin="0,10,0,0"
-                            Click="OnSaveQrClick" />
+                    <TextBlock Grid.Row="0" Style="{StaticResource SectionTitle}"
+                               Text="扫码配对（用于添加新手机）" />
 
-                    <Button DockPanel.Dock="Bottom" Style="{StaticResource ActionButton}"
-                            x:Name="BtnCopyUrl" Content="复制连接链接" Margin="0,10,0,0"
-                            Click="OnCopyUrlClick" />
-
-                    <StackPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
-                        <TextBlock Style="{StaticResource FieldLabel}" Text="连接地址" Margin="0,0,0,4" />
-                        <TextBox x:Name="TxtUrl" IsReadOnly="True" TextWrapping="Wrap"
-                                 Background="#FF1B1C22" Foreground="#FF8FD2FF"
-                                 BorderBrush="{StaticResource PanelBorderBrush}"
-                                 FontFamily="Consolas" FontSize="12" Padding="6" />
-                    </StackPanel>
-
-                    <Border Background="White" CornerRadius="6" Padding="8"
-                            HorizontalAlignment="Center" VerticalAlignment="Center">
-                        <Image x:Name="QrImage" Width="268" Height="268"
-                               RenderOptions.BitmapScalingMode="NearestNeighbor"
-                               Stretch="Uniform" />
-                    </Border>
-                </DockPanel>
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel>
+                            <Border Background="White" CornerRadius="6" Padding="10"
+                                    HorizontalAlignment="Center" Margin="0,6,0,0">
+                                <Image x:Name="QrImage" Stretch="None"
+                                       RenderOptions.BitmapScalingMode="NearestNeighbor"
+                                       SnapsToDevicePixels="True" />
+                            </Border>
+                            <TextBlock Margin="0,12,0,0" TextWrapping="Wrap"
+                                       Style="{StaticResource FieldLabel}"
+                                       Text="手机连同一个 Wi-Fi，在 App 里点「扫码连接」对准这里。" />
+                            <TextBlock Margin="0,6,0,0" TextWrapping="Wrap"
+                                       Style="{StaticResource FieldLabel}"
+                                       Text="二维码含 sid（服务器身份）与 fp（证书固定值）：手机首次连接即严格校验证书，换 IP 也能认出这台电脑。手填地址的方式仍在右边「配对信息」。"
+                                       x:Name="TxtQrHint" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
             </Border>
 
             <!-- Status panel -->
@@ -79,7 +87,7 @@
                                 <Button x:Name="BtnToggle" Style="{StaticResource ActionButton}"
                                         Content="启动服务" Click="OnToggleServerClick" />
                                 <Button x:Name="BtnReset" Style="{StaticResource ActionButton}"
-                                        Content="解除绑定并重置" Margin="0" Click="OnResetClick" />
+                                        Content="断开并重置" Margin="0" Click="OnResetClick" />
                             </StackPanel>
                         </Grid>
 
@@ -105,14 +113,23 @@
 
                         <Separator Margin="0,14,0,14" Background="{StaticResource PanelBorderBrush}" />
 
-                        <Grid Margin="0,0,0,6">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="96" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="绑定 IP" />
-                            <TextBlock Grid.Column="1" x:Name="TxtBound" Style="{StaticResource FieldValue}" Text="—" />
-                        </Grid>
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="配对信息（扫码失败时可手填）" />
+                        <TextBox x:Name="TxtUrl" IsReadOnly="True" TextWrapping="Wrap"
+                                 Background="#FF1B1C22" Foreground="#FF8FD2FF"
+                                 BorderBrush="{StaticResource PanelBorderBrush}"
+                                 FontFamily="Consolas" FontSize="12" Padding="6" />
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <Button x:Name="BtnCopyUrl" Style="{StaticResource ActionButton}"
+                                    Content="复制连接链接" MinWidth="120" Click="OnCopyUrlClick" />
+                            <Button x:Name="BtnSaveQr" Style="{StaticResource ActionButton}"
+                                    Content="保存二维码" MinWidth="110" Click="OnSaveQrClick" />
+                            <Button x:Name="BtnRefreshToken" Style="{StaticResource ActionButton}"
+                                    Content="刷新二维码" MinWidth="110" Click="OnRefreshTokenClick" />
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource FieldLabel}" Margin="0,6,0,0" TextWrapping="Wrap"
+                                   Text="手填时把整条链接粘进 App 的「主机地址」即可（token 留空则用设备密钥重连）。" />
+
+                        <Separator Margin="0,14,0,14" Background="{StaticResource PanelBorderBrush}" />
 
                         <Grid Margin="0,0,0,6">
                             <Grid.ColumnDefinitions>
@@ -124,6 +141,35 @@
                         </Grid>
 
                         <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="认证方式" />
+                            <TextBlock Grid.Column="1" x:Name="TxtAuthMode" Style="{StaticResource FieldValue}" Text="—" />
+                        </Grid>
+
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="待认证连接" />
+                            <TextBlock Grid.Column="1" x:Name="TxtPending" Style="{StaticResource FieldValue}" Text="0" />
+                        </Grid>
+
+                        <TextBlock Style="{StaticResource FieldLabel}" Margin="0,6,0,4" Text="信任设备（已保存公钥，可免扫码重连）" />
+                        <ListBox x:Name="TrustedList" Height="76" Background="#FF15161B"
+                                 Foreground="#FFCFD3E0" BorderBrush="{StaticResource PanelBorderBrush}"
+                                 FontFamily="Consolas" FontSize="12" />
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <Button x:Name="BtnRevokeDevice" Style="{StaticResource ActionButton}"
+                                    Content="撤销选中设备" MinWidth="120" Click="OnRevokeDeviceClick" />
+                            <Button x:Name="BtnRevokeAll" Style="{StaticResource ActionButton}"
+                                    Content="清除全部信任" Click="OnRevokeAllClick" />
+                        </StackPanel>
+
+                        <Grid Margin="0,10,0,6">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="96" />
                                 <ColumnDefinition Width="*" />
@@ -162,9 +208,48 @@
                                 <ColumnDefinition Width="96" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="服务器身份" />
+                            <TextBlock Grid.Column="1" x:Name="TxtSid" Style="{StaticResource FieldValue}"
+                                       FontFamily="Consolas" FontSize="11" Text="—" />
+                        </Grid>
+
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="指纹固定值" />
+                            <TextBlock Grid.Column="1" x:Name="TxtPin" Style="{StaticResource FieldValue}"
+                                       FontFamily="Consolas" FontSize="11" Text="—" />
+                            <Button Grid.Column="2" x:Name="BtnCopyPin" Style="{StaticResource ActionButton}"
+                                    Content="复制" MinWidth="64" Margin="8,0,0,0" Click="OnCopyPinClick" />
+                        </Grid>
+
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="指令计数" />
                             <TextBlock Grid.Column="1" x:Name="TxtCounters" Style="{StaticResource FieldValue}" Text="移动 0 · 点击 0 · 滚轮 0 · 复位 0" />
                         </Grid>
+
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="输入注入失败" />
+                            <TextBlock Grid.Column="1" x:Name="TxtInject" Style="{StaticResource FieldValue}" Text="0（非 0 表示 Windows 拒绝了注入，光标会「不动」）" />
+                        </Grid>
+
+                        <Separator Margin="0,14,0,14" Background="{StaticResource PanelBorderBrush}" />
+
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="通信测试（手机端「诊断」页发起）" />
+                        <TextBlock x:Name="TxtDiag" Style="{StaticResource FieldValue}"
+                                   FontSize="12" TextWrapping="Wrap"
+                                   Text="尚未运行。手机连接后在「诊断」页点「画圆测试」，这里会显示发送/接收/丢包/到达间隔与注入失败次数。" />
 
                         <Separator Margin="0,14,0,14" Background="{StaticResource PanelBorderBrush}" />
 
@@ -172,8 +257,6 @@
                         <StackPanel Orientation="Horizontal">
                             <Button x:Name="BtnSendFile" Style="{StaticResource ActionButton}"
                                     Content="发送文件到手机" MinWidth="140" Click="OnSendFileClick" />
-                            <Button x:Name="BtnRefreshToken" Style="{StaticResource ActionButton}"
-                                    Content="刷新二维码" Click="OnRefreshTokenClick" />
                         </StackPanel>
                         <ProgressBar x:Name="SendProgress" Height="8" Margin="0,12,0,4"
                                      Minimum="0" Maximum="100" Value="0" />

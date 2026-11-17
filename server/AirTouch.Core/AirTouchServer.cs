@@ -10,18 +10,27 @@ public sealed record ServerStatus(
     string Url,
     string Token,
     bool TokenConsumed,
-    string? BoundAddress,
+    string Sid,
     string? ClientAddress,
     string? ClientName,
+    string? ClientKeyId,
+    string? ClientAuthMode,
+    int PendingCount,
+    IReadOnlyList<TrustedDevice> TrustedDevices,
     IReadOnlyCollection<string> BannedAddresses,
     string DownloadDirectory,
     string CertificateFingerprint,
+    string CertificatePin,
+    int ScreenWidth,
+    int ScreenHeight,
     long MoveCommands,
     long ClickCommands,
     long ScrollCommands,
     long ResetCommands,
     long BytesReceived,
-    long BytesSent);
+    long BytesSent,
+    long SendInputFailures,
+    ServerDiagReport? LastDiagReport);
 
 public sealed record FileSendProgress(string FileName, long SentBytes, long TotalBytes)
 {
@@ -39,35 +48,72 @@ public sealed class AirTouchServerException : Exception
 }
 
 /// <summary>
-/// The WSS endpoint: authenticates the phone, turns control frames into cursor movement and moves
-/// files in both directions.
+/// The WSS endpoint: authenticates the phone with a device key, turns control frames into cursor
+/// movement and moves files in both directions.
 /// </summary>
 /// <remarks>
+/// <para>
+/// Authentication (docs/PROTOCOL.md §1.2) is a three-step exchange that costs exactly one signature per
+/// session and nothing at all per touch frame:
+/// </para>
+/// <list type="number">
+///   <item>the socket opens and is admitted as <em>pending</em>, bounded by a deadline and a small
+///     concurrency budget in <see cref="ConnectionGuard"/>; the server sends <c>auth_challenge</c> with a
+///     single-use nonce;</item>
+///   <item>the phone answers with <c>auth_req</c> — with the one-time token plus its public key when it is
+///     pairing, or with just its key id when it is resuming;</item>
+///   <item>the server verifies the ECDSA P-256 signature over the nonce and only then sends
+///     <c>welcome</c>. Resuming needs no QR code, no token and no address binding.</item>
+/// </list>
+/// <para>
 /// Threading: Fleck raises all socket callbacks on its own worker threads, the WPF window talks to us
 /// from the dispatcher thread and the watchdog runs on a timer thread. Connection state lives behind
-/// <c>_gate</c>, the in-flight incoming transfer behind <c>_transferGate</c>, and the two locks are
-/// never held at the same time so a slow disk can never block a mouse command.
+/// <c>_gate</c>, the in-flight incoming transfer behind <c>_transferGate</c>, and the two locks are never
+/// held at the same time so a slow disk can never block a mouse command.
+/// </para>
 /// </remarks>
 public sealed class AirTouchServer : IDisposable
 {
-    public const string Version = "1.0.0";
+    public const string Version = "2.0.0";
+
+    /// <summary>One socket that has been admitted but has not proven its device key yet.</summary>
+    private sealed class PendingAuth
+    {
+        public required IWebSocketConnection Socket { get; init; }
+
+        public required string Address { get; init; }
+
+        public required AuthMode Mode { get; init; }
+
+        public required string Nonce { get; init; }
+
+        public required DateTimeOffset ExpiresUtc { get; init; }
+    }
 
     private readonly AirTouchOptions _options;
     private readonly IMouseController _mouse;
     private readonly IAirTouchLog _log;
     private readonly ConnectionGuard _guard;
     private readonly ServerCertificate _certificate;
+    private readonly ServerIdentity _identity;
+    private readonly DeviceKeyStore _devices;
 
     private readonly object _gate = new();
     private readonly object _transferGate = new();
+    private readonly Dictionary<IWebSocketConnection, PendingAuth> _pending = new();
 
     private WebSocketServer? _listener;
     private IWebSocketConnection? _client;
+    private string? _clientKeyId;
+    private string? _clientDeviceName;
+    private string? _clientAuthMode;
     private IncomingFileTransfer? _incoming;
     private System.Threading.Timer? _watchdog;
     private DateTimeOffset _lastActivityUtc;
     private DateTimeOffset _lastPingUtc;
-    private string? _clientName;
+    private CommTestSession? _diagSession;
+    private ServerDiagReport? _lastDiagReport;
+    private (int X, int Y) _diagStartCursor;
     private bool _disposed;
 
     private long _moveCommands;
@@ -91,6 +137,12 @@ public sealed class AirTouchServer : IDisposable
             LocalAddressProvider.GetCandidates().Select(a => a.Address),
             _log);
 
+        CertificatePin = AuthCrypto.PinOfCertificate(_certificate.Certificate);
+
+        _identity = ServerIdentity.GetOrCreate(options.DataDirectory, _log);
+        _devices = DeviceKeyStore.Load(options.DataDirectory, _log);
+        _devices.Changed += (_, _) => RaiseStatusChanged();
+
         AdvertisedAddress = options.AdvertisedAddress ?? LocalAddressProvider.GetPreferredAddress();
     }
 
@@ -100,12 +152,34 @@ public sealed class AirTouchServer : IDisposable
 
     public event EventHandler<FileSendProgress>? FileSendProgressChanged;
 
+    /// <summary>Raised when a communication test finishes; the WPF window shows the numbers.</summary>
+    public event EventHandler<ServerDiagReport>? DiagnosticReportReady;
+
     public AirTouchOptions Options => _options;
 
     /// <summary>Address printed in the QR code; may be null when the machine has no usable LAN IPv4.</summary>
     public string? AdvertisedAddress { get; private set; }
 
     public string CertificateFingerprint => _certificate.Fingerprint;
+
+    /// <summary>Certificate pin (SPKI SHA-256, base64url) echoed into the QR code.</summary>
+    public string CertificatePin { get; }
+
+    /// <summary>Stable identity of this installation; the phone keys its certificate pin to it.</summary>
+    public string Sid => _identity.Id;
+
+    public IReadOnlyList<TrustedDevice> TrustedDevices => _devices.All;
+
+    public ServerDiagReport? LastDiagReport
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _lastDiagReport;
+            }
+        }
+    }
 
     public bool IsRunning
     {
@@ -118,8 +192,10 @@ public sealed class AirTouchServer : IDisposable
         }
     }
 
-    public string BuildQrPayload() =>
-        Protocol.BuildUrl(AdvertisedAddress ?? "127.0.0.1", _options.Port, _guard.Token, _options.UseTls);
+    public string BuildQrPayload() => BuildUrl(AdvertisedAddress ?? "127.0.0.1");
+
+    private string BuildUrl(string address) =>
+        Protocol.BuildUrl(address, _options.Port, _guard.Token, _identity.Id, CertificatePin, _options.UseTls);
 
     public void SetAdvertisedAddress(string address) => AdvertisedAddress = address;
 
@@ -127,25 +203,36 @@ public sealed class AirTouchServer : IDisposable
     {
         lock (_gate)
         {
+            var (width, height) = ScreenInfo.PrimaryScreenSize();
+
             return new ServerStatus(
                 IsRunning: _listener is not null,
                 Port: _options.Port,
                 AdvertisedAddress: AdvertisedAddress,
-                Url: Protocol.BuildUrl(AdvertisedAddress ?? "127.0.0.1", _options.Port, _guard.Token, _options.UseTls),
+                Url: BuildUrl(AdvertisedAddress ?? "127.0.0.1"),
                 Token: _guard.Token,
                 TokenConsumed: _guard.TokenConsumed,
-                BoundAddress: _guard.BoundAddress,
+                Sid: _identity.Id,
                 ClientAddress: _client?.ConnectionInfo.ClientIpAddress,
-                ClientName: _clientName,
+                ClientName: _clientDeviceName,
+                ClientKeyId: _clientKeyId,
+                ClientAuthMode: _clientAuthMode,
+                PendingCount: _guard.PendingCount,
+                TrustedDevices: _devices.All,
                 BannedAddresses: _guard.BannedAddresses,
                 DownloadDirectory: _options.DownloadDirectory,
                 CertificateFingerprint: _certificate.Fingerprint,
+                CertificatePin: CertificatePin,
+                ScreenWidth: width,
+                ScreenHeight: height,
                 MoveCommands: Interlocked.Read(ref _moveCommands),
                 ClickCommands: Interlocked.Read(ref _clickCommands),
                 ScrollCommands: Interlocked.Read(ref _scrollCommands),
                 ResetCommands: Interlocked.Read(ref _resetCommands),
                 BytesReceived: Interlocked.Read(ref _bytesReceived),
-                BytesSent: Interlocked.Read(ref _bytesSent));
+                BytesSent: Interlocked.Read(ref _bytesSent),
+                SendInputFailures: _mouse.SendInputFailures,
+                LastDiagReport: _lastDiagReport);
         }
     }
 
@@ -213,6 +300,7 @@ public sealed class AirTouchServer : IDisposable
         _watchdog = new System.Threading.Timer(WatchdogTick, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
 
         _log.Info($"服务已启动：wss://{AdvertisedAddress ?? "127.0.0.1"}:{_options.Port}{Protocol.WebSocketPath}");
+        _log.Info($"服务器身份 {_identity.Id}，证书指纹固定值 {CertificatePin}");
         _log.Info($"接收文件将保存到：{_options.DownloadDirectory}（单文件上限 {_options.MaxFileSize / 1024 / 1024} MiB）");
         RaiseStatusChanged();
     }
@@ -229,6 +317,11 @@ public sealed class AirTouchServer : IDisposable
             _listener = null;
             client = _client;
             _client = null;
+            _clientKeyId = null;
+            _clientDeviceName = null;
+            _clientAuthMode = null;
+            _pending.Clear();
+            _diagSession = null;
         }
 
         lock (_transferGate)
@@ -264,7 +357,7 @@ public sealed class AirTouchServer : IDisposable
         RaiseStatusChanged();
     }
 
-    /// <summary>Disconnects the current phone, unbinds the IP and lifts every ban.</summary>
+    /// <summary>Disconnects the current phone, lifts every ban and issues a fresh token.</summary>
     public void ResetSecurity(string reason)
     {
         IWebSocketConnection? client;
@@ -274,6 +367,10 @@ public sealed class AirTouchServer : IDisposable
         {
             client = _client;
             _client = null;
+            _clientKeyId = null;
+            _clientDeviceName = null;
+            _clientAuthMode = null;
+            _diagSession = null;
         }
 
         lock (_transferGate)
@@ -297,7 +394,66 @@ public sealed class AirTouchServer : IDisposable
         RaiseStatusChanged();
     }
 
-    /// <summary>Issues a fresh pairing token without touching the IP binding.</summary>
+    /// <summary>
+    /// Forgets one trusted phone. If that phone is connected right now it is disconnected with a
+    /// <c>trust_revoked</c> error, so revoking never leaves a live session running on a key the PC no
+    /// longer trusts.
+    /// </summary>
+    public bool RevokeDevice(string keyId)
+    {
+        if (!_devices.Revoke(keyId))
+        {
+            return false;
+        }
+
+        DisconnectIfActive(keyId, "该设备的信任已被电脑端撤销");
+        _log.Info($"已撤销设备信任：{keyId}");
+        RaiseStatusChanged();
+        return true;
+    }
+
+    /// <summary>Forgets every trusted phone (each phone must scan a new QR code afterwards).</summary>
+    public int RevokeAllDevices()
+    {
+        var count = _devices.RevokeAll();
+        if (count > 0)
+        {
+            DisconnectIfActive(null, "电脑端已清除全部信任设备");
+            _log.Info($"已清除全部信任设备（{count} 台）");
+            RaiseStatusChanged();
+        }
+
+        return count;
+    }
+
+    private void DisconnectIfActive(string? keyId, string message)
+    {
+        IWebSocketConnection? client = null;
+
+        lock (_gate)
+        {
+            if (_client is not null &&
+                (keyId is null || string.Equals(_clientKeyId, keyId, StringComparison.Ordinal)))
+            {
+                client = _client;
+                _client = null;
+                _clientKeyId = null;
+                _clientDeviceName = null;
+                _clientAuthMode = null;
+            }
+        }
+
+        if (client is null)
+        {
+            return;
+        }
+
+        TrySend(client, Protocol.BuildError("trust_revoked", message));
+        _ = Task.Delay(200).ContinueWith(_ => TryClose(client, 1008), TaskScheduler.Default);
+        _guard.MarkDisconnected(null);
+    }
+
+    /// <summary>Issues a fresh pairing token without touching the trust list.</summary>
     public string RotateToken() => _guard.RotateToken();
 
     public bool Unban(string address) => _guard.Unban(address);
@@ -451,31 +607,19 @@ public sealed class AirTouchServer : IDisposable
             return;
         }
 
-        // Two sockets can pass the stateless check above at the same time; the winner is whoever
-        // gets here first, so re-check the single-session rule while holding the lock.
-        var busy = false;
+        var pending = new PendingAuth
+        {
+            Socket = socket,
+            Address = address,
+            Mode = outcome.Mode,
+            Nonce = AuthCrypto.NewNonce(),
+            ExpiresUtc = DateTimeOffset.UtcNow + _options.AuthTimeout,
+        };
+
         lock (_gate)
         {
-            if (_client is not null)
-            {
-                busy = true;
-            }
-            else
-            {
-                _client = socket;
-                _clientName = null;
-                _lastActivityUtc = DateTimeOffset.UtcNow;
-                _lastPingUtc = DateTimeOffset.UtcNow;
-            }
+            _pending[socket] = pending;
         }
-
-        if (busy)
-        {
-            Reject(socket, new AuthOutcome(AuthResult.Busy, "已有设备处于连接状态"));
-            return;
-        }
-
-        _guard.MarkConnected(address);
 
         socket.OnMessage = message => HandleTextMessage(socket, message);
         socket.OnBinary = data => HandleBinaryFrame(socket, data);
@@ -493,14 +637,16 @@ public sealed class AirTouchServer : IDisposable
         };
         socket.OnPong = _ => Touch();
 
-        _log.Info($"设备已连接：{address}");
-        TrySend(socket, Protocol.BuildWelcome(
-            Version,
-            AdvertisedAddress ?? "127.0.0.1",
-            _options.Port,
-            _guard.BoundAddress,
-            _options.MaxFileSize,
-            _options.ChunkSize));
+        _log.Info($"连接已进入待认证状态（{address}，模式 {(pending.Mode == AuthMode.Pairing ? "配对" : "重连")}）");
+
+        // The challenge is the whole point of the exchange: the client signs this nonce, so a captured
+        // auth_req can never be replayed and a stale signature can never be reused.
+        TrySend(socket, Protocol.BuildAuthChallenge(
+            _identity.Id,
+            pending.Nonce,
+            AuthCrypto.UnixNow(),
+            (int)_options.AuthTimeout.TotalSeconds,
+            pending.Mode == AuthMode.Pairing ? "pair" : "resume"));
 
         RaiseStatusChanged();
     }
@@ -520,15 +666,29 @@ public sealed class AirTouchServer : IDisposable
     private void HandleDisconnected(IWebSocketConnection socket, string address)
     {
         var wasActive = false;
+        var wasPending = false;
 
         lock (_gate)
         {
+            if (_pending.Remove(socket))
+            {
+                wasPending = true;
+            }
+
             if (ReferenceEquals(_client, socket))
             {
                 _client = null;
-                _clientName = null;
+                _clientKeyId = null;
+                _clientDeviceName = null;
+                _clientAuthMode = null;
+                _diagSession = null;
                 wasActive = true;
             }
+        }
+
+        if (wasPending)
+        {
+            _guard.EndPending();
         }
 
         IncomingFileTransfer? transfer = null;
@@ -556,6 +716,19 @@ public sealed class AirTouchServer : IDisposable
 
     private void HandleTextMessage(IWebSocketConnection socket, string message)
     {
+        PendingAuth? pending;
+
+        lock (_gate)
+        {
+            _pending.TryGetValue(socket, out pending);
+        }
+
+        if (pending is not null)
+        {
+            HandlePendingMessage(socket, pending, message);
+            return;
+        }
+
         if (!IsActiveClient(socket))
         {
             return;
@@ -575,6 +748,13 @@ public sealed class AirTouchServer : IDisposable
             case MessageKind.Move:
                 _mouse.Move(command.Dx, command.Dy);
                 Interlocked.Increment(ref _moveCommands);
+                NoteDiagnosticFrame(command.Seq);
+                break;
+
+            case MessageKind.MoveTo:
+                _mouse.MoveTo(command.X, command.Y);
+                Interlocked.Increment(ref _moveCommands);
+                NoteDiagnosticFrame(command.Seq);
                 break;
 
             case MessageKind.Click:
@@ -603,13 +783,21 @@ public sealed class AirTouchServer : IDisposable
             case MessageKind.Hello:
                 lock (_gate)
                 {
-                    _clientName = string.IsNullOrWhiteSpace(command.DeviceName)
+                    _clientDeviceName = string.IsNullOrWhiteSpace(command.DeviceName)
                         ? command.AppVersion
                         : command.DeviceName;
                 }
 
                 _log.Info($"设备信息：{command.DeviceName ?? "未知设备"}（App {command.AppVersion ?? "未知"}）");
                 RaiseStatusChanged();
+                break;
+
+            case MessageKind.DiagBegin:
+                BeginDiagnostics(command);
+                break;
+
+            case MessageKind.DiagReport:
+                FinishDiagnostics(socket, command);
                 break;
 
             case MessageKind.Ping:
@@ -619,11 +807,366 @@ public sealed class AirTouchServer : IDisposable
             case MessageKind.Pong:
                 break;
 
+            case MessageKind.AuthReq:
+                // Already authenticated on this socket; a second auth_req is a protocol error, not a
+                // reason to drop a working session.
+                _log.Warn("已认证的连接上收到多余的 auth_req，已忽略");
+                break;
+
             default:
                 _log.Warn($"忽略未知指令：{command.RawType}");
                 break;
         }
     }
+
+    // ---------------- 认证 ----------------
+
+    private void HandlePendingMessage(IWebSocketConnection socket, PendingAuth pending, string message)
+    {
+        var command = Protocol.Parse(message);
+        if (command is null)
+        {
+            _log.Warn($"待认证连接上收到无法解析的文本帧：{Truncate(message)}");
+            return;
+        }
+
+        if (command.Kind != MessageKind.AuthReq)
+        {
+            // Nothing else is accepted before the key proof succeeds — in particular a control frame
+            // must never be able to register itself as a trusted device.
+            _log.Warn($"待认证连接上忽略了 {command.RawType} 帧（必须先完成 auth_req）");
+            return;
+        }
+
+        HandleAuthRequest(socket, pending, command);
+    }
+
+    private void HandleAuthRequest(IWebSocketConnection socket, PendingAuth pending, ControlMessage command)
+    {
+        if (DateTimeOffset.UtcNow > pending.ExpiresUtc)
+        {
+            FinishPending(socket, "auth_required", "认证超时，请重新连接", 1008);
+            return;
+        }
+
+        if (command.AuthVersion != AuthCrypto.AuthVersion)
+        {
+            _log.Warn($"auth_req 的协议版本不受支持：{command.AuthVersion}");
+            FinishPending(socket, "auth_unsupported", "认证协议版本不受支持，请更新 App", 1008);
+            return;
+        }
+
+        if (string.IsNullOrEmpty(command.KeyId) ||
+            !AuthCrypto.TryFromBase64Url(command.KeyId, out var keyIdBytes) ||
+            keyIdBytes.Length != AuthCrypto.FingerprintBytes)
+        {
+            FailAuth(socket, pending, "bad_key", "keyId 缺失或格式错误", "keyId 格式错误");
+            return;
+        }
+
+        var clockSkew = Math.Abs(AuthCrypto.UnixNow() - command.Timestamp);
+        if (command.Timestamp <= 0 || clockSkew > (long)_options.AuthClockSkew.TotalSeconds)
+        {
+            // Soft failure: the phone's clock is off, which is fixable (the challenge carries
+            // serverTime), so this must not burn the ban budget.
+            _log.Warn($"auth_req 时间戳超出允许范围（偏差 {clockSkew} 秒），已拒绝但不计入封禁");
+            FinishPending(socket, "stale_auth", $"时间戳偏差 {clockSkew} 秒，请检查手机时间", 1008);
+            return;
+        }
+
+        if (string.IsNullOrEmpty(command.Signature) ||
+            !AuthCrypto.TryFromBase64Url(command.Signature, out var signature))
+        {
+            FailAuth(socket, pending, "bad_signature", "签名字段缺失或格式错误", "签名字段格式错误");
+            return;
+        }
+
+        string publicKey;
+        var deviceName = command.DeviceName;
+        var wasPairing = pending.Mode == AuthMode.Pairing;
+
+        if (wasPairing)
+        {
+            // 1) the token must still be the live one — another phone may have consumed it between this
+            //    socket opening and its auth_req arriving.
+            var tokenOutcome = _guard.CheckPairingToken(pending.Address, command.Token);
+            if (!tokenOutcome.IsAllowed)
+            {
+                _log.Warn($"配对请求的 token 校验失败：{tokenOutcome.ErrorCode}");
+                FinishPending(socket, tokenOutcome.ErrorCode, tokenOutcome.Message, tokenOutcome.CloseCode);
+                return;
+            }
+
+            // 2) the public key must be well formed, P-256, and match the claimed key id.
+            if (string.IsNullOrEmpty(command.PublicKey) ||
+                !AuthCrypto.TryFromBase64Url(command.PublicKey, out var spki) ||
+                !AuthCrypto.TryImportPublicKey(spki, out var imported) ||
+                imported is null)
+            {
+                FailAuth(socket, pending, "bad_key", "公钥缺失、格式错误或不是 P-256", "公钥格式错误");
+                return;
+            }
+
+            imported.Dispose();
+
+            var computed = AuthCrypto.KeyIdOfPublicKey(spki);
+            if (!string.Equals(computed, command.KeyId, StringComparison.Ordinal))
+            {
+                FailAuth(socket, pending, "bad_key", "keyId 与公钥不匹配", "keyId 与公钥不匹配");
+                return;
+            }
+
+            publicKey = command.PublicKey;
+        }
+        else
+        {
+            var known = _devices.Find(command.KeyId);
+            if (known is null)
+            {
+                // Not a brute-force attempt: the PC may simply have forgotten this phone (data
+                // directory wiped, "clear trusted devices"), and the fix is to scan a QR code again.
+                _log.Warn($"重连的设备密钥不在信任列表中：{command.KeyId}");
+                FinishPending(socket, "key_unknown", "这台设备未被信任，请重新扫码配对", 1008);
+                return;
+            }
+
+            publicKey = known.PublicKey;
+            deviceName ??= known.Name;
+        }
+
+        var canonical = AuthCrypto.Canonical(_identity.Id, pending.Nonce, command.KeyId, command.Timestamp);
+
+        if (!AuthCrypto.TryFromBase64Url(publicKey, out var keyBytes) ||
+            !AuthCrypto.VerifySignature(keyBytes, canonical, signature))
+        {
+            FailAuth(socket, pending, "sig_invalid", "签名校验失败", "签名校验失败");
+            return;
+        }
+
+        // Past this point the peer has proven possession of the private key.
+        if (wasPairing)
+        {
+            _guard.MarkPaired(pending.Address);
+            _devices.Upsert(command.KeyId, publicKey, deviceName ?? "Android 设备", pending.Address);
+        }
+        else
+        {
+            _devices.Touch(command.KeyId, pending.Address);
+        }
+
+        CompleteAuthentication(socket, pending, command.KeyId, deviceName, wasPairing);
+    }
+
+    private void CompleteAuthentication(
+        IWebSocketConnection socket,
+        PendingAuth pending,
+        string keyId,
+        string? deviceName,
+        bool wasPairing)
+    {
+        IWebSocketConnection? replaced = null;
+        AuthOutcome? busy = null;
+
+        lock (_gate)
+        {
+            if (_client is not null && !ReferenceEquals(_client, socket))
+            {
+                if (string.Equals(_clientKeyId, keyId, StringComparison.Ordinal))
+                {
+                    // Same phone reconnecting (typically right after a Wi-Fi drop) while the old socket
+                    // has not been reaped yet: the new socket wins and the stale one is closed, so a
+                    // dropped link never locks the owner out with "busy".
+                    replaced = _client;
+                }
+                else
+                {
+                    // A different trusted phone: keep the current owner, politely refuse this one.
+                    busy = new AuthOutcome(AuthResult.Busy, "已有其他设备处于连接状态");
+                }
+            }
+
+            if (busy is null)
+            {
+                _client = socket;
+                _clientKeyId = keyId;
+                _clientDeviceName = deviceName;
+                _clientAuthMode = wasPairing ? "pair" : "resume";
+                _pending.Remove(socket);
+                _lastActivityUtc = DateTimeOffset.UtcNow;
+                _lastPingUtc = DateTimeOffset.UtcNow;
+            }
+        }
+
+        if (busy is not null)
+        {
+            _log.Warn($"拒绝连接：{busy.ErrorCode}（已有 {_clientKeyId} 在连接）");
+            FinishPending(socket, busy.ErrorCode, busy.Message, busy.CloseCode);
+            return;
+        }
+
+        _guard.EndPending();
+        _guard.MarkAuthenticated(keyId, deviceName, pending.Address);
+
+        if (replaced is not null)
+        {
+            _log.Info("同一台设备建立了新会话，正在关闭旧连接");
+            TrySend(replaced, Protocol.BuildError("replaced", "同一设备已在新的连接上恢复会话"));
+            _ = Task.Delay(150).ContinueWith(_ => TryClose(replaced, 1001), TaskScheduler.Default);
+        }
+
+        var (width, height) = ScreenInfo.PrimaryScreenSize();
+
+        _log.Info($"设备已连接：{pending.Address}（{deviceName ?? "未知设备"}，{(wasPairing ? "首次配对" : "已信任设备重连")}）");
+        TrySend(socket, Protocol.BuildWelcome(
+            Version,
+            AdvertisedAddress ?? "127.0.0.1",
+            _options.Port,
+            _identity.Id,
+            _options.MaxFileSize,
+            _options.ChunkSize,
+            width,
+            height,
+            ScreenInfo.PrimaryScreenRefreshHz(),
+            deviceName,
+            keyId,
+            wasPairing ? "pair" : "resume",
+            _devices.Count));
+
+        RaiseStatusChanged();
+    }
+
+    private void FailAuth(IWebSocketConnection socket, PendingAuth pending, string code, string message, string reason)
+    {
+        _guard.RegisterAuthFailure(pending.Address, reason);
+        FinishPending(socket, code, message, 1008);
+    }
+
+    /// <summary>Ends a pending exchange: sends the error, releases the slot and closes the socket.</summary>
+    private void FinishPending(IWebSocketConnection socket, string code, string message, int closeCode)
+    {
+        var wasPending = false;
+
+        lock (_gate)
+        {
+            wasPending = _pending.Remove(socket);
+        }
+
+        if (wasPending)
+        {
+            _guard.EndPending();
+        }
+
+        _log.Warn($"认证未通过：{code}（{message}）");
+        TrySend(socket, Protocol.BuildError(code, message));
+        _ = Task.Delay(150).ContinueWith(_ => TryClose(socket, closeCode), TaskScheduler.Default);
+        RaiseStatusChanged();
+    }
+
+    // ---------------- 通信测试诊断 ----------------
+
+    private void BeginDiagnostics(ControlMessage command)
+    {
+        var diag = command.Diag;
+        if (diag is null)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            _diagStartCursor = _mouse.GetCursorPosition();
+            _diagSession = new CommTestSession(
+                diag.TestKind,
+                diag.Mode,
+                diag.Planned,
+                diag.TargetHz,
+                diag.CircleMs,
+                DateTimeOffset.UtcNow);
+        }
+
+        // 光标采样线程与测试同生命周期：它测的是"光标位置每秒真正变化了几次"。
+        // 这个数字是"看起来流不流畅"的直接指标，也是把责任分给服务端还是手机/网络的关键证据。
+        _diagSession.StartCursorSampling(() => _mouse.GetCursorPosition());
+
+        _log.Info($"开始通信测试：{diag.TestKind}/{diag.Mode}，目标 {diag.TargetHz} Hz，计划 {diag.Planned} 帧");
+    }
+
+    private void NoteDiagnosticFrame(int? seq)
+    {
+        CommTestSession? session;
+        lock (_gate)
+        {
+            session = _diagSession;
+        }
+
+        session?.NoteFrame(seq, DateTimeOffset.UtcNow);
+    }
+
+    private void FinishDiagnostics(IWebSocketConnection socket, ControlMessage command)
+    {
+        var client = command.Diag ?? new ClientDiagReport("circle", "abs", 0, 0, 0, 0, 0, 0, 0, 0);
+        CommTestSession? session;
+        (int X, int Y) start;
+
+        lock (_gate)
+        {
+            session = _diagSession;
+            _diagSession = null;
+            start = _diagStartCursor;
+        }
+
+        if (session is null)
+        {
+            _log.Warn("收到 diag_report 但没有生效中的测试，已忽略");
+            return;
+        }
+
+        var report = session.Finish(client, start, _mouse.GetCursorPosition(), _mouse.SendInputFailures, DateTimeOffset.UtcNow);
+
+        lock (_gate)
+        {
+            _lastDiagReport = report;
+        }
+
+        _log.Info(
+            $"通信测试结果：手机发送 {report.ClientSent} 帧（用时 {report.ClientElapsedMs} ms，手机侧最大发送间隔 " +
+            $"{report.ClientMaxSendGapMs} ms）；电脑收到 {report.Received} 帧，丢 {report.Lost}，重复 {report.Duplicated}，" +
+            $"乱序 {report.OutOfOrder}，最大到达间隔 {report.MaxGapMs} ms，平均 {report.MeanGapMs} ms；" +
+            $"光标实测更新 {report.CursorHz} Hz（采样 {report.CursorPollHz} Hz，最大间隔 {report.CursorMaxGapMs} ms，屏幕 {report.DisplayHz} Hz）；" +
+            $"SendInput 失败 {report.SendInputFailures} 次；光标 {report.StartX},{report.StartY} → {report.EndX},{report.EndY}");
+
+        var (width, height) = ScreenInfo.PrimaryScreenSize();
+
+        TrySend(socket, Protocol.BuildDiagReport(
+            report.TestKind,
+            report.Mode,
+            report.Planned,
+            report.Received,
+            report.FirstSeq,
+            report.LastSeq,
+            report.Lost,
+            report.Duplicated,
+            report.OutOfOrder,
+            report.MaxGapMs,
+            report.MeanGapMs,
+            report.DurationMs,
+            (int)report.SendInputFailures,
+            report.StartX,
+            report.StartY,
+            report.EndX,
+            report.EndY,
+            width,
+            height,
+            report.CursorUpdates,
+            report.CursorPollHz,
+            report.CursorMaxGapMs,
+            report.DisplayHz));
+
+        DiagnosticReportReady?.Invoke(this, report);
+        RaiseStatusChanged();
+    }
+
+    // ---------------- 文件 ----------------
 
     private void BeginIncomingTransfer(IWebSocketConnection socket, ControlMessage command)
     {
@@ -754,41 +1297,65 @@ public sealed class AirTouchServer : IDisposable
         RaiseStatusChanged();
     }
 
+    // ---------------- 看门狗 ----------------
+
     private void WatchdogTick(object? state)
     {
+        List<PendingAuth> expired = new();
         IWebSocketConnection? client;
         var shouldPing = false;
         var timedOut = false;
 
         lock (_gate)
         {
+            if (_pending.Count > 0)
+            {
+                var now = DateTimeOffset.UtcNow;
+                foreach (var pair in _pending.Where(p => now > p.Value.ExpiresUtc).ToArray())
+                {
+                    _pending.Remove(pair.Key);
+                    expired.Add(pair.Value);
+                }
+            }
+
             client = _client;
-            if (client is null)
-            {
-                return;
-            }
 
-            var now = DateTimeOffset.UtcNow;
+            if (client is not null)
+            {
+                var now = DateTimeOffset.UtcNow;
 
-            if (now - _lastActivityUtc > _options.IdleTimeout)
-            {
-                timedOut = true;
+                if (now - _lastActivityUtc > _options.IdleTimeout)
+                {
+                    timedOut = true;
+                }
+                else if (now - _lastPingUtc >= _options.PingInterval)
+                {
+                    _lastPingUtc = now;
+                    shouldPing = true;
+                }
             }
-            else if (now - _lastPingUtc >= _options.PingInterval)
-            {
-                _lastPingUtc = now;
-                shouldPing = true;
-            }
+        }
+
+        foreach (var pending in expired)
+        {
+            _guard.EndPending();
+            _log.Warn($"待认证连接超过 {_options.AuthTimeout.TotalSeconds:0} 秒未提交 auth_req，已关闭（{pending.Address}）");
+            TrySend(pending.Socket, Protocol.BuildError("auth_required", "认证超时，请重新连接"));
+            TryClose(pending.Socket, 1008);
         }
 
         if (timedOut)
         {
             _log.Warn($"连接超过 {_options.IdleTimeout.TotalSeconds:0} 秒无响应，主动断开");
-            TryClose(client, 1001);
+            if (client is not null)
+            {
+                TryClose(client, 1001);
+            }
+
             return;
         }
 
-        if (shouldPing)
+        if (shouldPing && client is not null)
         {
             try
             {

@@ -1,7 +1,7 @@
 # Build helper: runs the .NET SDK with its per-user state redirected inside this checkout.
 #
-# The sandbox used to scaffold this project denies writes to C:\Users\<user>\.dotnet, which the
-# SDK needs for its first-run sentinel. DOTNET_CLI_HOME moves that state into .dotnet-home/.
+# Keeps the SDK's first-run state and the package cache out of C:\Users\<user>\.dotnet by setting
+# DOTNET_CLI_HOME / NUGET_PACKAGES below.
 #
 # Usage:  pwsh -File tools\dotnet.ps1 build server\AirTouch.sln
 #         pwsh -File tools\dotnet.ps1 run --project server\AirTouch.SmokeTest\AirTouch.SmokeTest.csproj

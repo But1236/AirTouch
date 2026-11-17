@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 暴露的目录（仅 API < 29 的「打开收到的文件」用得到）。
+  只给公共下载目录，不暴露 App 私有目录，避免把内部文件误分享出去。
+-->
+<paths>
+    <external-path
+        name="downloads"
+        path="Download/" />
+</paths>

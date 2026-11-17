@@ -101,15 +101,23 @@
             android:layout_marginTop="@dimen/at_space_xs"
             android:text="@string/pairing_last_connected_none" />
 
+        <Button
+            android:id="@+id/button_reconnect"
+            style="@style/Widget.AirTouch.ActionButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/at_space_s"
+            android:text="@string/pairing_reconnect" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/at_space_m"
+            android:layout_marginTop="@dimen/at_space_s"
             android:orientation="horizontal">
 
             <Button
                 android:id="@+id/button_manual_input"
-                style="@style/Widget.AirTouch.ActionButton"
+                style="@style/Widget.AirTouch.ToolbarButton"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"

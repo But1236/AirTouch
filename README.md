@@ -1,254 +1,189 @@
-# AirTouch — 把手机当成电脑的外设
+# AirTouch — 把 Android 手机当成电脑的外设
 
-用一台 Android 手机，通过校园局域网（同一个 Wi-Fi）无线控制 Windows 11 电脑：**空中鼠标**（陀螺仪）、
-**触摸板**（手势 + 点击 + 滚轮）、**双向文件互传**。全链路 `wss://` 加密，扫码即连。
+用手机通过局域网无线控制 Windows 电脑：**空中鼠标**（陀螺仪控制光标）、**触摸板**（手势、点击、滚轮）、
+**手机与电脑双向传文件**，以及一套 **通信诊断**（画圆测试）用来判断卡顿出在哪一层。
 
-> The product UI, logs and `docs/PROTOCOL.md` are written in Chinese; this README is in English so the
-> whole design and its verification status can be reviewed quickly.
+连接走 `wss://`，服务端使用自签名证书，手机端按证书指纹固定（pinning）。第一次扫码配对之后，
+之后开机自动重连，**不用再扫码**。
+
+```
+┌─────────────┐        wss://192.168.1.5:8443/ws        ┌──────────────┐
+│  Android    │  ───────────────────────────────────►  │   Windows    │
+│  AirTouch   │   扫码配对一次 → 之后凭设备密钥重连      │ AirTouch.exe │
+└─────────────┘                                        └──────────────┘
+```
 
 ---
 
-## 1. What it does
+## 功能
 
-| Feature | Windows side | Android side |
+| 功能 | 电脑端 | 手机端 |
 | --- | --- | --- |
-| 空中鼠标 Air mouse | `SendInput` relative move | `TYPE_GYROSCOPE` angular velocity × Δt × sensitivity |
-| 触摸板 Touchpad | `SendInput` move / click / wheel | drag = move, two-finger swipe = scroll, tap = left click |
-| Buttons | left / right click | 左键 / 右键 toolbar |
-| Wheel mode | scroll notches (positive = up) | 滚轮模式 + drag distance → `scroll` |
-| Reset | `SetCursorPos` to primary-screen centre | 复位 button (also clears the gyro accumulator) |
-| File phone → PC | saves into the user's Downloads | SAF picker, 64 KiB chunks |
-| File PC → phone | 发送文件 button | saved via MediaStore Downloads (or legacy path < API 29) |
-| Pairing | window shows LAN IP, status and a QR code | ZXing scan; manual connect dialog as a fallback |
+| 空中鼠标 | `SendInput` 相对移动 | 陀螺仪角速度 × Δt × 灵敏度，专用线程采样 |
+| 触摸板 | 移动 / 点击 / 滚轮 | 单指拖动、轻点左键、双指滚动、双指轻点右键 |
+| 左右键 / 滚轮 | 对应注入 | 底部工具栏，另有滚轮模式 |
+| 复位 | 光标回到主屏中心 | 「复位」按钮，同时清空陀螺仪累积量 |
+| 通信诊断 | `moveto` + 序号统计，回传报告 | 画圆测试，两端显示同一结论 |
+| 手机 → 电脑文件 | 存到电脑「下载」目录 | 系统文件选择器，64 KiB 分块 |
+| 电脑 → 手机文件 | 发送文件按钮 | 存到手机「下载」目录，附「打开」按钮 |
+| 配对 / 重连 | 窗口显示二维码与局域网地址 | 扫码配对；断线自动重连，无需重新扫码 |
+| 设备管理 | 信任设备列表，可单个移除或全部移除 | — |
 
-Endpoint: `wss://{IP}:{PORT}/ws?token={TOKEN}` — default port **8443**, path `/ws`, one-time UUID token.
-
----
-
-## 2. Repository layout
-
-```
-docs/PROTOCOL.md            wire protocol v1 — the single source of truth
-NuGet.config                points restore at the vendored feed (.nuget-local)
-tools/fetch-nuget.mjs       offline package fetcher (Node/OpenSSL; see §7)
-tools/dotnet.ps1            dotnet wrapper that keeps SDK state inside the repo
-tools/build.ps1             builds Core + Server + SmokeTest (no .sln needed)
-tools/wss-probe.mjs         independent RFC 6455 TLS client probe (Node/OpenSSL)
-tools/verify-wss.ps1        runs a headless server + the probe above
-server/AirTouch.Core/       protocol, WSS host, certificate, security guard,
-                            SendInput mouse, file transfer, QR rendering
-server/AirTouch.Server/     WPF UI (QR, status, log, send file, unbind/reset)
-server/AirTouch.SmokeTest/  self-test client: unit + end-to-end + live input + WPF check
-android/                    Kotlin app (see android/README.md)
-```
+**空中鼠标的持握方式**：手机大致放平、屏幕朝上、顶部朝前，像拿一支激光笔指着屏幕 ——
+左右转手腕控制光标左右，顶部上下俯仰控制光标上下。方向不对可以在页面上开「反向」。
 
 ---
 
-## 3. Requirements
+## 环境要求
 
-**Windows 11** — .NET 8 SDK/runtime for building (`net8.0-windows`, `RollForward=LatestMajor` so a
-newer runtime such as .NET 10 also runs it). No admin rights needed.
-
-**Android 8.0 (API 26) or newer** — JDK 17 + Android SDK 34 to build, or just install the APK.
-
-Both devices must be on the same LAN with **AP isolation disabled** (client isolation blocks
-phone→PC traffic; nothing in the app can work around it).
+| | 要求 |
+| --- | --- |
+| 电脑 | Windows 10 / 11，.NET 8 运行时（只运行）或 .NET 8 SDK（自己编译） |
+| 手机 | Android 8.0（API 26）及以上 |
+| 网络 | 两台设备在同一个局域网，且路由器**未开启 AP 隔离**（客户端隔离会直接挡住手机 → 电脑的流量，App 无法绕过） |
+| 编译手机端（可选） | JDK 17 + Android SDK 34；或直接用 Android Studio 打开 `android/` |
 
 ---
 
-## 4. Build and run
+## 快速开始
 
-### Windows server
+### 1. 编译并启动电脑端
 
 ```powershell
-pwsh -File tools\build.ps1              # Debug: Core + Server + SmokeTest
-pwsh -File tools\build.ps1 -Release     # Release
-pwsh -File tools\build.ps1 -Run         # build and start the WPF app
+git clone https://github.com/But1236/AirTouch.git
+cd AirTouch
+pwsh -File tools\build.ps1 -Run        # 编译并启动，或先 build 再手动运行 exe
 ```
 
-`server\AirTouch.Server\bin\Debug\net8.0-windows\AirTouch.Server.exe` starts the WPF window, which
-immediately begins listening. The window shows the LAN address, the connection status, the client,
-the bound IP, the banned list, the certificate fingerprint and a live log.
+生成的可执行文件在
+`server\AirTouch.Server\bin\Debug\net8.0-windows\AirTouch.Server.exe`，双击也能直接启动。
 
-On first launch Windows Firewall asks whether to allow the app — **allow it for private networks**,
-otherwise the phone cannot connect. To script it once (admin shell):
+窗口里会显示二维码、局域网地址、连接状态和信任设备列表。
+**第一次启动时 Windows 防火墙会弹窗询问，请勾选「专用网络」并允许**，否则手机连不上。
+也可以用管理员 PowerShell 一次性放行：
 
 ```powershell
 netsh advfirewall firewall add rule name="AirTouch" dir=in action=allow protocol=TCP localport=8443
 ```
 
-### Android app
+### 2. 安装手机端
 
-```powershell
+用 Android Studio 打开 `android/` 目录直接 Run，或者命令行构建：
+
+```bat
 cd android
-gradlew.bat assembleDebug               # needs JDK 17 and Android SDK 34
+gradlew.bat assembleDebug
+:: 产物：android\app\build\outputs\apk\debug\app-debug.apk
+gradlew.bat installDebug
 ```
 
-Create `android/local.properties` with `sdk.dir=C\:\\Users\\<you>\\AppData\\Local\\Android\\Sdk`,
-or simply open the `android/` folder in Android Studio and press Run. In this checkout that file
-already exists and points `sdk.dir` at the git-ignored `.android-sdk/`, with a JDK 17 in `.jdk/` to
-use as `JAVA_HOME`. The Gradle wrapper (8.7, including `gradle-wrapper.jar`) is committed, so no
-Gradle installation is required.
-APK output: `android/app/build/outputs/apk/debug/app-debug.apk`.
+需要一个 `local.properties` 指向你的 Android SDK：
 
-### Pairing
-
-1. Start the Windows app; the QR panel shows `wss://<lan-ip>:8443/ws?token=<uuid>`.
-2. On the phone, open AirTouch → **扫码连接**, point the camera at the QR.
-3. The phone pins the server certificate (TOFU) and connects; the token is destroyed immediately
-   after a successful connection and the PC locks onto the phone's IP.
-4. If scanning is inconvenient, the manual dialog accepts the IP and the token typed by hand.
-
-### Verification
-
-```powershell
-# 1) full self-test: policy units, filename hardening, protocol, certificate, wss handshake,
-#    end-to-end over the real socket, live SendInput, and the WPF window
-server\AirTouch.SmokeTest\bin\Debug\net8.0-windows\AirTouch.SmokeTest.exe .smoke
-
-# 2) independent cross-check of the wss endpoint from a non-Schannel TLS client
-pwsh -File tools\verify-wss.ps1
+```properties
+sdk.dir=C\:\\Users\\<用户名>\\AppData\\Local\\Android\\Sdk
 ```
 
-Last run on this machine: **120/120 passed** (.NET suite) and **32/32 passed** (Node/OpenSSL probe),
-including TLS 1.3, the certificate fingerprint check, one-time token reuse, a reconnecting phone's
-replayed token being rejected as `token_expired` **without** consuming the brute-force ban budget,
-IP lock across two different source addresses, brute-force ban, hostile filenames (including
-Chinese/emoji names), 300 KiB and 220 KiB byte-exact file transfers in both directions, the Android
-client's exact upload sequence (`hello` → `file_header` → chunks → `file_end`) with a Chinese
-filename, and `SendInput`/`SetCursorPos` verified against the real cursor (`reset` landed exactly on
-the primary screen centre). See §9 for what is *not* verified.
+Android Studio 会自动生成这个文件。Gradle wrapper（8.7）已随仓库提供，不需要另外装 Gradle。
+构建细节见 [`android/README.md`](android/README.md)。
+
+### 3. 配对
+
+1. 电脑端窗口显示二维码，内容是
+   `wss://<局域网IP>:8443/ws?token=<一次性票据>&sid=<服务器身份>&fp=<证书指纹>`；
+2. 手机连同一个 Wi-Fi，打开 AirTouch，点「扫码连接」，对准二维码；
+3. 首次会申请相机权限，识别成功后自动进入控制界面；
+4. 以后启动 App 会**自动重连上次的电脑**（也可以点「免扫码重连上次的电脑」）。
+   只有电脑端撤销了这台设备、或手机重装了 App，才需要重新扫码。
+
+不方便扫码时，可以点「手动输入地址」手填 IP、端口和 token；token 留空表示"用设备密钥重连"。
+
+### 4. 怎么用
+
+顶部三个标签页：
+
+- **触摸板** —— 单指拖动移动光标，轻点左键，双指上下滑动滚轮，双指轻点右键。
+  底部有「左键 / 右键 / 滚轮模式 / 复位」。
+- **空中鼠标** —— 拿着手机移动即可，灵敏度可在 0.1x ~ 10.0x 之间调整。
+  页面上会实时显示采样率、实发帧率、发送间隔和总帧数。
+- **诊断** —— 画圆测试，见下文。
+
+底部工具栏还有「发送文件」和「断开」。
 
 ---
 
-## 5. Using it
+## 卡顿了怎么办（诊断）
 
-**Top tabs.** 空中鼠标 (air mouse) / 触摸板 (touchpad).
+点「诊断」→「开始画圆测试」，电脑光标会画两个圆（左圆与左/上/下边缘相切，右圆与右/上/下边缘相切），
+频率可选 60 / 100 / 144 Hz。测完两端会显示同样的结论：
 
-**Touchpad.** Drag to move (deltas are scaled by the sensitivity slider), two-finger swipe to scroll,
-a tap without movement to left-click. The bottom toolbar has 左键 / 右键 / 滚轮模式 / 复位.
-
-**Air mouse.** Hold the phone and move it; the gyroscope angular velocity is integrated per frame
-(angle × Δt × sensitivity) and streamed as `move`. 复位 recentres the PC cursor *and* discards the
-accumulated remainder so the pointer does not jump afterwards.
-
-**Files.** 发送文件 on the PC pushes a file to the phone. On the phone, the file picker uploads to the
-PC's Downloads folder. Both directions verify byte counts; a partial transfer is written to `.part`
-and only renamed into place when complete.
-
----
-
-## 6. Security model
-
-| Threat | Mitigation |
+| 现象 | 结论 |
 | --- | --- |
-| Eavesdropping on the Wi-Fi | `wss://` (TLS 1.2/1.3) with a per-install self-signed certificate |
-| Rogue server / MITM after pairing | Android pins the leaf certificate's SHA-256 per host (TOFU) and pins the hostname to the paired address; a changed fingerprint aborts the connection |
-| Random device connecting | One-time random UUID token in the QR, destroyed on first successful use; a replayed token is reported as `token_expired` without counting towards the ban counter |
-| Another device hijacking the session | IP binding: after the first successful pairing only that IP is accepted; a second connection gets `busy` (1013); the UI can 解除绑定并重置 |
-| Token brute force | 3 consecutive failures permanently ban the offending IP; 20 attempts / 10 s rate limit; check order is fixed: path → ban → rate limit → IP binding → single connection → token |
-| Path traversal on upload | `Path.GetFileName` + separator stripping + control/invalid character removal + reserved-name escaping + `.part` staging + confinement to the download directory (verified with `../../../evil/../` names) |
-| Disk exhaustion | 512 MiB per-file limit, disk-space pre-check before accepting, overrun rejected |
-| Traffic analysis / replay of controls | Every message is scoped to the authenticated socket; the guard rotates the token on disconnect while keeping the IP binding |
+| 手机侧最大发送间隔很大 | 手机端卡住了，帧根本没发出去 |
+| 到达间隔大 / 有丢帧，但手机侧正常 | 网络问题：Wi-Fi 省电导致的成串到达 |
+| 帧全到、间隔正常，但光标仍然一顿一顿 | Windows 拒绝了输入注入（看「输入注入失败」计数） |
+| 帧全到、间隔正常，但光标实测更新率远低于目标频率 | 位移不足 1 物理像素，光标只能整像素跳 —— 降低频率或调高灵敏度 |
 
-There is no plaintext mode. `wss://` is the only production transport, and the listener refuses to
-start rather than silently serving unencrypted traffic. (The self-test harness can still drive the
-protocol over a loopback `ws://` socket when the host cannot serve TLS, but that switch lives in
-code only — it is not reachable from the UI or from any environment variable.)
-
-Configuration overrides: `AIRTOUCH_PORT`, `AIRTOUCH_ADDRESS`, `AIRTOUCH_DATA_DIR`,
-`AIRTOUCH_DOWNLOAD_DIR`. Defaults: data dir `%LOCALAPPDATA%\AirTouch`, downloads
-`%USERPROFILE%\Downloads`.
+**排查思路**：手机页面上有「发送间隔」的均值/最大值，电脑回传的报告里有「最大到达间隔」。
+两边都正常说明链路没问题；手机侧正常而到达间隔是 200ms 级，那就是帧在链路上被攒着一起发了 ——
+换 5 GHz、关掉蓝牙、确认手机拿到了 Wi-Fi 低延迟锁（拿不到时页面会直接提示原因）。
+最快的交叉验证是用 **USB 网络共享**（手机设置 → 热点与网络共享 → USB 共享）跑同一次测试：
+空洞消失说明问题在 Wi-Fi 空口，空洞照旧则要回到手机侧找。
 
 ---
 
-## 7. Building offline (why this repo looks unusual)
+## 安全
 
-Agent sessions that work on this repo run inside a sandbox that strips the process token down to a
-single privilege (`SeChangeNotifyPrivilege`). Schannel cannot create a client credential under such
-a token, so `dotnet restore`, `curl` and PowerShell's HTTPS requests all fail there with
-`SEC_E_NO_CREDENTIALS` ("安全包中没有可用的凭证"). **This is the sandbox, not your desktop** — a
-normal desktop session has working outbound TLS and `dotnet restore` reaches nuget.org as usual.
-The offline machinery below exists so that a sandboxed agent can still restore and build:
+| 项目 | 说明 |
+| --- | --- |
+| 传输 | 全链路 `wss://`（TLS 1.2 / 1.3），服务端使用启动时生成并持久化的自签名证书 |
+| 身份 | 手机首次连接时在 `AndroidKeyStore` 里生成一把 EC P-256 私钥（不可导出），每次连接对服务端下发的一次性随机数签名 |
+| 证书固定 | 手机按**服务器身份 `sid`** 固定证书的 SPKI 指纹（不是按 IP），换 IP 不会误判，指纹变化立即断开 |
+| 一次性票据 | 二维码里的 pairing token 只对首次配对有效，配对成功即销毁并重新生成 |
+| 设备管理 | 电脑端可查看信任设备列表并撤销任意一台；被撤销的设备下次连接会被拒绝 |
+| 防暴力尝试 | 连接频率限制（单 IP 10 秒 20 次），token 连续失败 3 次或签名连续失败 5 次即封禁该 IP |
 
-* `tools/fetch-nuget.mjs` downloads `.nupkg` files with **Node's OpenSSL** stack into `.nuget-local`
-  (Fleck 1.2.0, QRCoder 1.6.0, the .NET 8 targeting packs, …). Run it as
-  `node tools\fetch-nuget.mjs --out .nuget-local [id@1.2.3 …]`; the output directory is a flag on
-  purpose, so a mistyped spec can never create a directory named after a package.
-* `NuGet.config` clears all sources, points at `./.nuget-local`, and redirects the global packages
-  folder to `./.nuget` (120 MB, git-ignored).
-* `tools/dotnet.ps1` sets `DOTNET_CLI_HOME`/`NUGET_PACKAGES` inside the repo so the SDK never has to
-  write to `C:\Users\<you>\.dotnet`.
-
-On a normal machine you can delete `NuGet.config` (or add nuget.org back) and restore from the
-internet as usual. To re-create the offline feed, run `node tools/fetch-nuget.mjs`.
+没有明文模式，也没有任何云服务依赖：服务端如果无法提供 TLS，会直接报错退出而不是降级成明文。
 
 ---
 
-## 8. Troubleshooting
+## 目录结构
 
-**`.sln` build fails with 0 errors.** Known on this SDK install: the classic solution restore path
-dies in `_FilterRestoreGraphProjectInputItems` / `MSB4276` (missing workload auto-import targets).
-`server/AirTouch.sln` is kept for Visual Studio, but build with `tools/build.ps1`, which builds each
-project directly and always works.
-
-**"无法启用 wss：证书私钥只能以内存临时密钥加载…"** — Schannel refuses to serve TLS from an
-in-memory key, and Windows denied writing the certificate's private key into the user's key
-container (`%APPDATA%\Microsoft\Crypto`). This is what happens inside a confined sandbox (the agent
-environment), not on a normal desktop: run the app in a normal desktop session (or as
-administrator), or delete `airtouch-server.pfx` in the data directory and retry. The app fails
-loudly instead of silently serving plaintext.
-
-**Phone cannot reach the PC.** Check the firewall rule above, confirm both devices are on the same
-subnet (not a guest network), and confirm AP/client isolation is off. The status panel shows the
-exact address the QR encodes; if the PC has several adapters, pick the right one in the dropdown.
-
-**Certificate changed.** Regenerating `airtouch-server.pfx` invalidates the phone's pin; use
-「重置证书信任」 on the pairing screen and pair again.
-
-**Port already in use.** The server reports it clearly; change the port field and press 重启服务.
-
-**`NU1102: 找不到版本为 (= 8.0.NN) 的包 Microsoft.NETCore.App.Ref`** after a .NET SDK update: a new
-SDK raises the net8.0 targeting-pack patch it asks for (8.0.33 → 8.0.34 happened here). Re-vendor the
-matching packs:
-
-```powershell
-node tools\fetch-nuget.mjs --out .nuget-local      # picks the newest packs in the 8.0. band
+```
+server/
+  AirTouch.Core/        协议、WSS 服务、证书与认证、设备信任、鼠标注入、文件传输、二维码
+  AirTouch.Server/      WPF 界面（二维码、状态、日志、信任设备、发送文件）
+  AirTouch.SmokeTest/   自检客户端（单元 + 端到端 + 真实输入 + 窗口检查）
+android/                Kotlin 客户端，见 android/README.md
+docs/PROTOCOL.md        通信协议 v2（唯一事实来源）
+tools/                  构建与验证脚本（build.ps1、verify-wss.ps1 等）
 ```
 
 ---
 
-## 9. Verified vs. not verified
+## 常见问题
 
-**Verified on this machine** (120 + 32 automated checks, reproducible with the commands in §4):
-security-policy units; filename/path hardening; protocol parsing and builders; certificate
-generation, persistence and renewal; the real `wss://` handshake with fingerprint match (both from
-.NET's `ClientWebSocket` and from an independent Node/OpenSSL client speaking raw RFC 6455);
-one-time token, replay handling, IP binding, `busy`, rate limiting and the 3-strike ban over the
-wire; hostile filenames end to end; byte-exact file transfer both directions; server ping / client
-pong keepalive; real `SendInput` mouse movement, clicks, wheel and `SetCursorPos` centring; and the
-WPF window starting, listening and rendering its QR code.
+**手机连不上电脑。** 先确认防火墙已放行 8443（见上文），两台设备在同一网段（不是访客网络），
+并且路由器没有开启 AP 隔离。窗口里会显示二维码实际使用的地址，如果电脑有多张网卡，可以切换。
 
-**Not verified here — please treat with care:**
+**提示「证书已变化」/ 重新生成了证书。** 电脑端重新生成证书后，手机记录的指纹就失效了：
+在配对界面或「诊断」页点「重置证书信任」，然后重新扫码。
 
-1. **The Android app now compiles, but has never run on a device.** A JDK 17 and an Android SDK were
-   later downloaded into the git-ignored `.jdk/` and `.android-sdk/` folders (`android/local.properties`
-   points `sdk.dir` at the latter), and `assembleDebug` now succeeds —
-   `android/app/build/outputs/apk/debug/app-debug.apk` (7.4 MB) exists. What is still unverified is
-   runtime behaviour on real hardware: camera scanning, the gyroscope, touch gestures and the whole
-   pairing flow have never been exercised. The original line-by-line review (API existence, resource
-   and view-binding references, JSON field names, thread usage) still carries its residual risks,
-   listed in `android/README.md`.
-2. **No real phone ↔ PC session.** Every end-to-end check used automated clients on this machine
-   (loopback, and a genuine second source address for the IP-lock test). Camera scanning, the
-   gyroscope, and touch gestures need hands-on testing.
-3. **`.sln`-based builds** (see §8).
+**提示「这台设备未被信任」或「已被移除信任」。** 电脑端把设备移除了，或者手机重装了 App
+（重装会生成新的设备密钥）。重新扫一次二维码即可。
+
+**端口被占用。** 窗口里会明确报出来，改端口后点「重启服务」。
+
+**手机端编译报 `gradle-8.7-bin.zip.lck (拒绝访问)`。** Gradle 需要往用户目录写缓存，
+把 `GRADLE_USER_HOME` 指到一个可写目录再构建。
 
 ---
 
-## 10. Protocol
+## 协议
 
-`docs/PROTOCOL.md` is authoritative: message schemas, the six required message types plus the
-additive ones (`hello`/`welcome`/`file_end`/`file_ack`/`error`/`ping`/`pong`), chunk size, close
-codes (`1008` policy, `1013` busy, `1001` going away) and error codes (`bad_path`, `banned`,
-`rate_limited`, `ip_locked`, `busy`, `token_invalid`, `token_expired`).
+通信协议以 [`docs/PROTOCOL.md`](docs/PROTOCOL.md) 为准（v2）：三步认证
+（`auth_challenge` → `auth_req` → `welcome`）、待签名的规范字符串、全部消息格式、
+分块大小、关闭码与错误码表都在里面。
+
+## 许可证
+
+[MIT](LICENSE)

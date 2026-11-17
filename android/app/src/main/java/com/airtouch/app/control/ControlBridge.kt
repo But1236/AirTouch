@@ -35,6 +35,15 @@ interface ControlBridge {
     /** 切换滚轮模式，会同步持久化设置、同步另一个 Fragment、更新工具栏按钮外观 */
     fun setScrollMode(enabled: Boolean)
 
+    /**
+     * Wi-Fi 低延迟锁的状态说明。
+     *
+     * @return `null` 表示一切正常（锁已持有）；否则返回给用户看的短句，例如
+     *   `Wi-Fi 低延迟锁未获取：SecurityException`。蓝牙/省电模式导致的「帧成串到达」与此直接相关，
+     *   所以必须能在界面上看见，而不是只写在日志里。
+     */
+    fun wifiLatencyNote(): String?
+
     /** 轻量提示（Toast/Snackbar） */
     fun showHint(message: String)
 }

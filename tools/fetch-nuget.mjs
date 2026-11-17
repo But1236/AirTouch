@@ -2,11 +2,11 @@
 /*
  * fetch-nuget.mjs - offline NuGet package fetcher for the AirTouch build environment.
  *
- * Sandboxed agent sessions confine the process token, so Schannel cannot acquire credentials there
- * and `dotnet restore` / `curl` / PowerShell cannot reach https://api.nuget.org. A normal desktop
- * session reaches it fine - this script is a sandbox workaround, not a desktop requirement.
- * Node.js ships its own OpenSSL stack and *can* reach it, so this script downloads the .nupkg files
- * we need into a plain folder feed that `dotnet restore` consumes through ./NuGet.config.
+ * For machines that cannot reach https://api.nuget.org (no outbound TLS, or a locked-down process
+ * token that Schannel refuses to use). A normal desktop session reaches nuget.org fine and does not
+ * need this script. Node.js ships its own OpenSSL stack and *can* reach it, so this script downloads
+ * the .nupkg files we need into a plain folder feed that `dotnet restore` consumes through
+ * ./NuGet.config.
  *
  * Usage:
  *   node tools/fetch-nuget.mjs [--out <dir>] [id@1.2.3 | id@8.0. ...]

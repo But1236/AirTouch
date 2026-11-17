@@ -5,15 +5,13 @@ obj/
 *.suo
 .vs/
 
-# ---- local dotnet / NuGet state (redirected into the workspace on purpose) ----
+# ---- local dotnet / NuGet state (kept inside the workspace) ----
 # .nuget-local is the vendored offline feed; re-create it with: node tools/fetch-nuget.mjs
 .nuget/
 .nuget-local/
 .dotnet-home/
 
 # ---- local Android / JDK toolchain ----
-# Downloaded into the workspace to build android/ (Schannel is broken on this
-# machine, so tools/dl.mjs uses Node's OpenSSL stack instead).
 #   .jdk/jdk-17.0.21+9   -> JAVA_HOME
 #   .android-sdk         -> android/local.properties (sdk.dir=)
 # Both are re-downloadable; never commit them.
@@ -22,6 +20,8 @@ obj/
 
 # ---- runtime and test artifacts ----
 .smoke/
+.smoke-clean/
+.qrtest/
 .probe-server/
 airtouch.log
 airtouch-server.pfx
@@ -45,3 +45,6 @@ android/captures/
 *.swp
 Thumbs.db
 desktop.ini
+
+# ---- personal notes ----
+.toeit/

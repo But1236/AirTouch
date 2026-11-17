@@ -1,14 +1,13 @@
 # Verifies the production wss:// endpoint with a non-Schannel TLS client (Node + OpenSSL).
 #
-# Why: on some locked-down machines .NET cannot acquire Schannel client credentials
-# (SEC_E_NO_CREDENTIALS), which makes a C# client useless for verifying TLS. Node brings its own
-# OpenSSL stack - the same TLS family Android uses - and tools/wss-probe.mjs speaks raw RFC 6455, so
-# this checks TLS, the upgrade handshake, token auth, control frames, ping/pong and file upload
-# independently of the .NET client.
+# Why: verifying TLS with a C# client that uses the same OS stack as the server is a weak check.
+# Node brings its own OpenSSL stack - the same TLS family Android uses - and tools/wss-probe.mjs
+# speaks raw RFC 6455, so this checks TLS, the upgrade handshake, token auth, control frames,
+# ping/pong and file upload independently of the .NET client.
 #
 # Requires: Node.js on PATH, and a build (`pwsh -File tools\build.ps1`).
-# Note: the server needs to write the certificate's private key into the user key container, so if
-# you are running inside a restricted sandbox this script needs the same wider access the app does.
+# Note: the server writes the certificate's private key into the user key container; on a machine
+# where that is denied, run the app once in a normal desktop session first.
 #
 # Usage: pwsh -File tools\verify-wss.ps1 [-Port 28443] [-WorkDir <dir>]
 

@@ -6,6 +6,13 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!--
+      连接期间抓一个 WIFI_MODE_FULL_LOW_LATENCY 锁，让 Wi-Fi 别进省电模式：
+      Wi-Fi 省电会把帧攒起来一起发（到达间隔抖动到几十毫秒），现象正是「手机在动、光标一跳一跳」。
+      两个权限都是 normal 级别，安装即授予，不会有运行时弹窗；代码里仍然 try/catch 兜底。
+    -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- API < 29 直接写公共「下载」目录才需要；29+ 走 MediaStore.Downloads，无需要此权限 -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
@@ -53,5 +60,20 @@
             android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|screenLayout|uiMode"
             android:exported="false"
             android:theme="@style/Theme.AirTouch" />
+
+        <!--
+          「收到的文件在哪」这个问题需要能直接打开：API ≥ 29 用 MediaStore 的 content:// 就能
+          直接 ACTION_VIEW；API < 29 写的是公共下载目录里的普通文件，需要 FileProvider 才能
+          把读权限临时授给别的应用。这里只暴露下载目录本身，不外泄 App 私有数据。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

@@ -357,17 +357,54 @@ public static class Program
         reporter.Check("非对象 JSON 返回 null", Protocol.Parse("[1,2,3]") is null);
         reporter.Check("未知字段被忽略", Protocol.Parse("""{"type":"reset","extra":{"a":1}}""") is { Kind: MessageKind.Reset });
 
+        // ---- key 帧（docs/PROTOCOL.md §2.6）
+        reporter.Check("解析 key 按下", Protocol.Parse("""{"type":"key","vk":67,"down":true}""") is { Kind: MessageKind.Key, VirtualKey: 67, KeyDown: true });
+        reporter.Check("解析 key 抬起", Protocol.Parse("""{"type":"key","vk":67,"down":false}""") is { VirtualKey: 67, KeyDown: false });
+        reporter.Check("key 缺 vk 视为非法（0）", Protocol.Parse("""{"type":"key","down":true}""") is { Kind: MessageKind.Key, VirtualKey: 0 });
+        reporter.Check("key 的 vk 超上限被截断", Protocol.Parse("""{"type":"key","vk":9999}""") is { VirtualKey: Protocol.MaxVirtualKey });
+        reporter.Check("key 的负 vk 被截断", Protocol.Parse("""{"type":"key","vk":-5}""") is { VirtualKey: 0 });
+        reporter.Check("key 缺 down 时按「抬起」处理（绝不留下卡住的按键）", Protocol.Parse("""{"type":"key","vk":67}""") is { KeyDown: false });
+        reporter.Check("key 的 down 接受字符串 false", Protocol.Parse("""{"type":"key","vk":67,"down":"false"}""") is { KeyDown: false });
+        reporter.Check("key 的 down 接受字符串 true", Protocol.Parse("""{"type":"key","vk":67,"down":"true"}""") is { KeyDown: true });
+        reporter.Check("key 的 down 接受数字 1", Protocol.Parse("""{"type":"key","vk":67,"down":1}""") is { KeyDown: true });
+        reporter.Check("key 缺 ext 时由服务端推断（null）", Protocol.Parse("""{"type":"key","vk":67,"down":true}""") is { KeyExtended: null });
+        reporter.Check("key 可显式指定 ext（小键盘回车与主回车共用 VK_RETURN）",
+            Protocol.Parse("""{"type":"key","vk":13,"down":true,"ext":true}""") is { VirtualKey: 13, KeyExtended: true });
+        reporter.Check("ext 显式 false 与缺省可区分",
+            Protocol.Parse("""{"type":"key","vk":13,"down":true,"ext":false}""") is { KeyExtended: false });
+        reporter.Check("方向键被判定为扩展键（否则 NumLock 打开时会变成小键盘数字）",
+            Win32KeyInfo.IsExtended(0x25) && Win32KeyInfo.IsExtended(0x2E) && Win32KeyInfo.IsExtended(0x2C));
+        reporter.Check("普通字母键不是扩展键", !Win32KeyInfo.IsExtended(0x41) && !Win32KeyInfo.IsExtended(0x0D));
+
+        // ---- text 帧（docs/PROTOCOL.md §2.7）
+        reporter.Check("解析 text", Protocol.Parse("""{"type":"text","s":"你好"}""") is { Kind: MessageKind.Text, Text: "你好" });
+        reporter.Check("text 缺 s 时整帧被忽略", Protocol.Parse("""{"type":"text"}""") is null);
+        reporter.Check("text 的 s 不是字符串时整帧被忽略", Protocol.Parse("""{"type":"text","s":123}""") is null);
+        reporter.Check("text 的 s 为 null 时整帧被忽略", Protocol.Parse("""{"type":"text","s":null}""") is null);
+        reporter.Check("text 的未知字段被忽略",
+            Protocol.Parse("""{"type":"text","s":"你好","extra":{"a":1}}""") is { Kind: MessageKind.Text, Text: "你好" });
+        reporter.Check("长度上限内的 emoji 不被破坏", Protocol.Parse("""{"type":"text","s":"你好😀"}""") is { Text: "你好😀" });
+        reporter.Check("Text 缺省为空串而非 null", new ControlMessage().Text.Length == 0);
+
+        var overlongText = Protocol.Parse($$"""{"type":"text","s":"{{new string('a', Protocol.MaxTextLength + 40)}}"}""");
+        reporter.Check($"超长文本被截断到 {Protocol.MaxTextLength} 个码元",
+            overlongText is not null && overlongText.Text == new string('a', Protocol.MaxTextLength));
+
+        // 第 256 个码元正好是 emoji 的高代理项：截断点落在字符中间，必须少取一个码元，
+        // 否则注入出去的是一个孤立的代理项，接收方只会显示乱码方块
+        var splitPair = new string('a', Protocol.MaxTextLength - 1) + "😀" + "尾";
+        var splitPairText = Protocol.Parse($$"""{"type":"text","s":"{{splitPair}}"}""");
+        reporter.Check("截断不切开代理对（落在高代理项上时少取一个码元）",
+            splitPairText is not null && splitPairText.Text == new string('a', Protocol.MaxTextLength - 1));
+
         var url = Protocol.BuildUrl("192.168.1.5", 8443, "abc-123");
         reporter.Equal("二维码 URL 格式", "wss://192.168.1.5:8443/ws?token=abc-123", url);
 
         var welcome = Protocol.BuildWelcome(
-            "2.0.0", "192.168.1.5", 8443, "sid-test", 1024, 64, 1920, 1080, 180, "Pixel", "key-1", "pair", 2);
+            "2.0.2", "192.168.1.5", "sid-test", 180, "key-1", "pair");
         reporter.Equal("welcome 类型", "welcome", TestJson.GetString(welcome, "type"));
-        reporter.Equal("welcome 端口", 8443, (int)TestJson.GetLong(welcome, "port"));
         reporter.Equal("welcome 带协议版本", 2, (int)TestJson.GetLong(welcome, "protocolVersion"));
-        reporter.Equal("welcome 带屏幕宽度", 1920, (int)TestJson.GetLong(welcome, "screenWidth"));
-        reporter.Equal("welcome 带屏幕高度", 1080, (int)TestJson.GetLong(welcome, "screenHeight"));
-        reporter.Equal("welcome 带屏幕刷新率（手机据此选默认测试频率）", 180, (int)TestJson.GetLong(welcome, "displayHz"));
+        reporter.Equal("welcome 带屏幕刷新率（感知流畅度的上限）", 180, (int)TestJson.GetLong(welcome, "displayHz"));
         reporter.Equal("welcome 带认证方式", "pair", TestJson.GetString(welcome, "authMode"));
         reporter.Equal("welcome 带服务器身份", "sid-test", TestJson.GetString(welcome, "sid"));
 
@@ -393,61 +430,14 @@ public static class Program
             !chineseHeader.Contains('中'));
 
         RunProtocolV2Tests(reporter);
-        RunCursorSamplerTests(reporter);
     }
 
     /// <summary>
-    /// Direct tests for <see cref="CursorSampler"/> — the "how often did the cursor really move?" probe.
-    /// The read function is injected, so these two cases are deterministic: a constant position must
-    /// count zero updates (the first reading is only a baseline), and a position that changes on every
-    /// poll must count roughly every poll.
-    /// </summary>
-    private static void RunCursorSamplerTests(TestReporter reporter)
-    {
-        using (var sampler = new CursorSampler(() => (100, 200)))
-        {
-            sampler.Start();
-            Thread.Sleep(60);
-            var stats = sampler.Stop();
-            reporter.Equal("光标采样：位置不变时记 0 次更新（首次读数只作基线）", 0, stats.Updates);
-            reporter.Check("光标采样：静止时也在高频轮询（采样率可信）", stats.PollHz >= 200, $"{stats.PollHz} Hz");
-        }
-
-        var counter = 0;
-        using (var sampler = new CursorSampler(() => (Interlocked.Increment(ref counter), 0)))
-        {
-            sampler.Start();
-            Thread.Sleep(60);
-            var stats = sampler.Stop();
-            // 每次轮询都换一个位置 → 更新次数与采样次数同阶（少算一次基线）
-            reporter.Check("光标采样：位置每次都变时更新次数≈采样次数",
-                stats.Updates >= 200 && stats.PollHz >= 200,
-                $"更新 {stats.Updates} 次 / 采样 {stats.PollHz} Hz");
-        }
-    }
-
-    /// <summary>
-    /// The v2 additions: absolute moves, the diagnostic frames and — most importantly — the exact byte
-    /// layout of the signed authentication payload.
+    /// The v2 additions: most importantly the exact byte layout of the signed
+    /// authentication payload.
     /// </summary>
     private static void RunProtocolV2Tests(TestReporter reporter)
     {
-        var moveTo = Protocol.Parse("""{"type":"moveto","x":120,"y":-40,"seq":7}""");
-        reporter.Check("解析 moveto", moveTo is { Kind: MessageKind.MoveTo, X: 120, Y: -40, Seq: 7 });
-        reporter.Check("moveto 超限被截断",
-            Protocol.Parse("""{"type":"moveto","x":999999,"y":0}""") is { X: Protocol.MaxAbsoluteCoordinate },
-            Protocol.Parse("""{"type":"moveto","x":999999,"y":0}""")?.X.ToString());
-
-        var seqless = Protocol.Parse("""{"type":"move","dx":1,"dy":2}""");
-        reporter.Check("move 没有 seq 时 Seq 为 null（诊断是可选字段）", seqless is { Seq: null });
-
-        var diagBegin = Protocol.Parse("""{"type":"diag_begin","testKind":"circle","mode":"abs","planned":600,"targetHz":100,"circleMs":2400}""");
-        reporter.Check("解析 diag_begin", diagBegin is { Kind: MessageKind.DiagBegin, Diag.Planned: 600, Diag.TargetHz: 100 });
-
-        var diagReport = Protocol.Parse("""{"type":"diag_report","testKind":"circle","mode":"rel","sent":590,"firstSeq":1,"lastSeq":600,"elapsedMs":5900,"targetHz":100,"circleMs":2400,"maxSendGapMs":37}""");
-        reporter.Check("解析 diag_report", diagReport is { Kind: MessageKind.DiagReport, Diag.Sent: 590, Diag.MaxSendGapMs: 37 });
-        reporter.Equal("diag_report 缺失的字段按 0 处理", 0, diagReport!.Diag!.Planned);
-
         var authReq = Protocol.Parse("""{"type":"auth_req","auth_v":1,"keyId":"kid","sign":"sig","ts":1762000000,"token":"t","pubKey":"pk","deviceName":"phone"}""");
         reporter.Check("解析 auth_req", authReq is
         {
@@ -616,7 +606,8 @@ public static class Program
 
         var log = new AirTouchLog(dataDir);
         var mouse = new RecordingMouseController();
-        using var server = new AirTouchServer(options, mouse, log);
+        var keyboard = new RecordingKeyboardController();
+        using var server = new AirTouchServer(options, mouse, log, keyboard);
 
         var received = new List<FileTransferResult>();
         server.FileReceived += (_, result) =>
@@ -624,15 +615,6 @@ public static class Program
             lock (received)
             {
                 received.Add(result);
-            }
-        };
-
-        ServerDiagReport? diagResult = null;
-        server.DiagnosticReportReady += (_, report) =>
-        {
-            lock (received)
-            {
-                diagResult = report;
             }
         };
 
@@ -683,14 +665,10 @@ public static class Program
         await client.SendTextAsync(deviceA.BuildAuthRequest(challenge.Sid, challenge.Nonce, token));
         var welcome = await WaitForFrameAsync(client, frame => frame.MessageType == "welcome", ShortWait);
         reporter.Equal("配对成功收到 welcome", "welcome", welcome?.MessageType);
-        reporter.Equal("welcome 携带 chunkSize", 64 * 1024, (int)TestJson.GetLong(welcome!.Text!, "chunkSize"));
-        reporter.Equal("welcome 宣告协议版本 2", 2, (int)TestJson.GetLong(welcome.Text!, "protocolVersion"));
+        // welcome 的非空断言由本行的 ! 承担（原先承载它的 chunkSize 断言已随协议字段一并删除）。
+        reporter.Equal("welcome 宣告协议版本 2", 2, (int)TestJson.GetLong(welcome!.Text!, "protocolVersion"));
         reporter.Equal("welcome 回显设备 keyId", deviceA.KeyId, TestJson.GetString(welcome.Text!, "keyId"));
         reporter.Equal("welcome 认证方式为 pair", "pair", TestJson.GetString(welcome.Text!, "authMode"));
-        reporter.Equal("welcome 报告信任设备数", 1, (int)TestJson.GetLong(welcome.Text!, "trustedCount"));
-        reporter.Check("welcome 带主屏尺寸",
-            TestJson.GetLong(welcome.Text!, "screenWidth") > 0 && TestJson.GetLong(welcome.Text!, "screenHeight") > 0,
-            $"{TestJson.GetLong(welcome.Text!, "screenWidth")}×{TestJson.GetLong(welcome.Text!, "screenHeight")}");
 
         reporter.Check("配对的公钥已入库", server.TrustedDevices.Any(d => d.KeyId == deviceA.KeyId));
         reporter.Check("配对后 token 被销毁", server.GetStatus().TokenConsumed);
@@ -820,6 +798,71 @@ public static class Program
             reporter.Equal("move 被截断到上限", $"move {Protocol.MaxMoveStep} 0", events[5]);
         }
 
+        // --- key frames（docs/PROTOCOL.md §2.6）
+        //
+        // 一次组合键在线上就是四次独立的按键状态变化（Ctrl↓ C↓ C↑ Ctrl↑），和真实键盘产生的
+        // 事件序列完全一致；服务端不做任何「组合」解释，只负责把每一次变化注入。
+        await client.SendTextAsync("""{"type":"key","vk":17,"down":true}""");
+        await client.SendTextAsync("""{"type":"key","vk":67,"down":true}""");
+        await client.SendTextAsync("""{"type":"key","vk":67,"down":false}""");
+        await client.SendTextAsync("""{"type":"key","vk":17,"down":false}""");
+        // 小键盘回车：vk 与主回车相同，只能靠 ext 区分
+        await client.SendTextAsync("""{"type":"key","vk":13,"down":true,"ext":true}""");
+        await client.SendTextAsync("""{"type":"key","vk":13,"down":false}""");
+        // 非法帧：缺 vk、vk 越界、未知字段——都必须被忽略而不是掀翻会话
+        await client.SendTextAsync("""{"type":"key","down":true}""");
+        await client.SendTextAsync("""{"type":"key","vk":9999,"down":true,"mods":[1,2]}""");
+
+        var gotKeys = await WaitForAsync(() => keyboard.Events.Count >= 7, ShortWait);
+        reporter.Check("收到并执行 key 帧", gotKeys, string.Join(" | ", keyboard.Events));
+
+        if (gotKeys)
+        {
+            var keys = keyboard.Events;
+            reporter.Equal("Ctrl 按下", "key 17 down", keys[0]);
+            reporter.Equal("C 按下", "key 67 down", keys[1]);
+            reporter.Equal("C 抬起", "key 67 up", keys[2]);
+            reporter.Equal("Ctrl 抬起", "key 17 up", keys[3]);
+            reporter.Equal("小键盘回车带扩展标志", "key 13 down ext", keys[4]);
+            reporter.Equal("小键盘回车抬起沿用按下时的扩展标志（否则松开的不是同一个键）", "key 13 up ext", keys[5]);
+            reporter.Equal("vk 越界被截断到上限", $"key {Protocol.MaxVirtualKey} down", keys[6]);
+        }
+
+        // --- text 帧（docs/PROTOCOL.md §2.7）
+        //
+        // 整串 Unicode 一次注入：中文在虚拟键码这一层根本不存在（键位 ≠ 字符），只能绕开键盘布局
+        // 直接把字符投给前台窗口。text 帧没有按键状态，因此不参与卡键记账。
+        var heldBeforeText = keyboard.HeldKeyCount;
+        var textEventsBefore = keyboard.Events.Count(e => e.StartsWith("text ", StringComparison.Ordinal));
+        await client.SendTextAsync("""{"type":"text","s":"你好"}""");
+        await client.SendTextAsync($$"""{"type":"text","s":"{{new string('宽', Protocol.MaxTextLength + 20)}}"}""");
+
+        var gotText = await WaitForAsync(
+            () => keyboard.Events.Count(e => e.StartsWith("text ", StringComparison.Ordinal)) == textEventsBefore + 2,
+            ShortWait);
+        reporter.Check("收到并执行 text 帧", gotText, string.Join(" | ", keyboard.Events));
+
+        if (gotText)
+        {
+            var textEvents = keyboard.Events.Where(e => e.StartsWith("text ", StringComparison.Ordinal)).ToArray();
+            reporter.Equal("text 帧原样交给控制器", "text 你好", textEvents[textEventsBefore]);
+            reporter.Equal($"超长 text 在协议层被截断到 {Protocol.MaxTextLength} 个码元",
+                "text " + new string('宽', Protocol.MaxTextLength), textEvents[textEventsBefore + 1]);
+        }
+
+        reporter.Equal("text 帧不参与卡键记账（它没有按键状态）", heldBeforeText, keyboard.HeldKeyCount);
+        reporter.Check("text 指令计数递增",
+            await WaitForAsync(() => server.GetStatus().TextCommands >= 2, ShortWait),
+            server.GetStatus().TextCommands.ToString());
+
+        // --- 断开时必须自己松手：手机端的粘滞键把 Ctrl 锁住时连接掉了，如果不释放，
+        //     电脑上会留下一个物理卡住的 Ctrl，之后用户碰真实键盘的每一次输入都会变成快捷键。
+        //     先把上一帧「vk 越界被截断到 255」留下的按下状态放掉，否则 held 计数会把它一起算进来。
+        await client.SendTextAsync($$"""{"type":"key","vk":{{Protocol.MaxVirtualKey}},"down":false}""");
+        await client.SendTextAsync("""{"type":"key","vk":162,"down":true}""");
+        reporter.Check("按下的按键在会话期间被记住",
+            await WaitForAsync(() => keyboard.HeldKeyCount == 1, ShortWait), $"held={keyboard.HeldKeyCount}");
+
         reporter.Check("设备名上报成功", await WaitForAsync(() => server.GetStatus().ClientName == "Pixel-Test", ShortWait),
             server.GetStatus().ClientName ?? "<null>");
 
@@ -840,6 +883,7 @@ public static class Program
         await client.SendTextAsync("this is not json");
         await client.SendTextAsync("""{"type":"move","dx":"abc","dy":null}""");
         await client.SendTextAsync("""{"type":"unknown-thing"}""");
+        await client.SendTextAsync("""{"type":"text","s":123}""");
         await Task.Delay(200);
         await client.SendTextAsync("""{"type":"reset"}""");
         reporter.Check("非法帧之后连接仍然可用", await WaitForAsync(() => mouse.Events.Count >= 8, ShortWait));
@@ -894,67 +938,6 @@ public static class Program
         await Task.Delay(200);
         await client.SendTextAsync("""{"type":"reset"}""");
         reporter.Check("无 header 的二进制帧被忽略且连接存活", await WaitForAsync(() => mouse.Events.Count >= 9, ShortWait));
-
-        // --- 绝对定位：绕过 Windows 指针加速，画圆测试靠它给出精确轨迹
-        await client.SendTextAsync("""{"type":"moveto","x":123,"y":456,"seq":1}""");
-        await client.SendTextAsync("""{"type":"moveto","x":999999,"y":-999999,"seq":2}""");
-        reporter.Check("moveto 被记录", await WaitForAsync(() => mouse.Events.Any(e => e == "moveto 123 456"), ShortWait),
-            string.Join(" | ", mouse.Events.TakeLast(3)));
-        reporter.Check("moveto 超出协议上限的坐标被截断",
-            await WaitForAsync(() => mouse.Events.Any(e => e == $"moveto {Protocol.MaxAbsoluteCoordinate} {-Protocol.MaxAbsoluteCoordinate}"), ShortWait),
-            string.Join(" | ", mouse.Events.TakeLast(3)));
-
-        // --- 通信测试诊断（手机端「画圆测试」的服务端一半）
-        await client.SendTextAsync("""{"type":"diag_begin","testKind":"circle","mode":"abs","planned":200,"targetHz":100,"circleMs":2400}""");
-        for (var i = 1; i <= 200; i++)
-        {
-            await client.SendTextAsync($$"""{"type":"moveto","x":{{i}},"y":{{i}},"seq":{{i + 10}}}""");
-        }
-
-        await client.SendTextAsync(
-            """{"type":"diag_report","testKind":"circle","mode":"abs","sent":200,"planned":200,"firstSeq":11,"lastSeq":210,"elapsedMs":2000,"targetHz":100,"circleMs":2400,"maxSendGapMs":25}""");
-
-        var diagFrame = await WaitForFrameAsync(client, frame => frame.MessageType == "diag_report", LongWait);
-        reporter.Check("服务端回传 diag_report", diagFrame is not null, diagFrame?.Text ?? "<超时>");
-
-        await WaitForAsync(() =>
-        {
-            lock (received)
-            {
-                return diagResult is not null;
-            }
-        }, ShortWait);
-
-        if (diagResult is not null)
-        {
-            reporter.Equal("诊断：统计到全部帧", 200, diagResult.Received);
-            reporter.Equal("诊断：无丢帧", 0, diagResult.Lost);
-            reporter.Equal("诊断：无重复", 0, diagResult.Duplicated);
-            reporter.Equal("诊断：无乱序", 0, diagResult.OutOfOrder);
-            reporter.Equal("诊断：记录首序号", 11, diagResult.FirstSeq);
-            reporter.Equal("诊断：记录末序号", 210, diagResult.LastSeq);
-            reporter.Equal("诊断：手机自报发送数", 200, diagResult.ClientSent);
-            reporter.Equal("诊断：手机自报最大发送间隔", 25, diagResult.ClientMaxSendGapMs);
-            reporter.Check("诊断：缺少的帧数按 0 计算（手机与电脑计数一致）", diagResult.Missing == 0);
-            reporter.Check("诊断：记录了到达间隔", diagResult.MaxGapMs >= 0 && diagResult.DurationMs >= 0,
-                $"max {diagResult.MaxGapMs} ms / 用时 {diagResult.DurationMs} ms");
-            reporter.Check("诊断：记录了光标起止位置", diagResult.EndX == 200 && diagResult.EndY == 200,
-                $"({diagResult.StartX},{diagResult.StartY}) → ({diagResult.EndX},{diagResult.EndY})");
-            reporter.Check("诊断：光标采样线程在跑（否则“光标实测更新率”不可信）",
-                diagResult.CursorSampleValid, $"采样 {diagResult.CursorPollHz} Hz");
-            reporter.Check("诊断：记录了光标实际更新次数",
-                diagResult.CursorUpdates >= 1 && diagResult.CursorUpdates <= diagResult.Received + 2,
-                $"{diagResult.CursorUpdates} 次 / 收到 {diagResult.Received} 帧");
-            reporter.Check("诊断：屏幕刷新率是可查询/可解释的值",
-                diagResult.DisplayHz is >= 0 and <= 1000, $"{diagResult.DisplayHz} Hz");
-        }
-        else
-        {
-            reporter.Check("诊断：服务端产生报告", false, "未收到 DiagnosticReportReady");
-        }
-
-        reporter.Check("服务端保留了最近一次诊断结果", server.LastDiagReport is not null);
-        reporter.Check("诊断结束后挂起/活动状态正常", server.GetStatus().ClientAddress is not null);
 
         // --- server -> client file transfer
         var downloadPayloadPath = Path.Combine(workspace, "download-payload.bin");
@@ -1093,6 +1076,9 @@ public static class Program
         reporter.Check("服务已停止", !server.IsRunning);
         await client.DisposeAsync();
 
+        reporter.Check("连接断开后服务端释放了所有仍按下的按键",
+            await WaitForAsync(() => keyboard.HeldKeyCount == 0, ShortWait), $"held={keyboard.HeldKeyCount}");
+
         // --- port conflict surfaces as a friendly error
         var blocker = new TcpListener(IPAddress.Any, port);
         blocker.Start();
@@ -1132,7 +1118,6 @@ public static class Program
                 ShortWait);
             var afterRestartWelcome = await TestAuth.AuthenticateAsync(afterRestart, deviceA, null, ShortWait);
             reporter.Equal("电脑重启后手机仍可免扫码重连", "welcome", afterRestartWelcome?.MessageType);
-            reporter.Equal("重启后重连的信任设备数", 1, (int)TestJson.GetLong(afterRestartWelcome!.Text!, "trustedCount"));
 
             restarted.Stop();
         }
@@ -1163,7 +1148,8 @@ public static class Program
 
         var log = new AirTouchLog(dataDir);
         var mouse = new Win32MouseController(log);
-        using var server = new AirTouchServer(options, mouse, log);
+        var keyboard = new Win32KeyboardController(log);
+        using var server = new AirTouchServer(options, mouse, log, keyboard);
         server.Start();
 
         var liveStatus = server.GetStatus();
@@ -1235,14 +1221,6 @@ public static class Program
         reporter.Check("滚轮与点击被 SendInput 接受", mouse.ScrollCount >= 1 && mouse.ClickCount >= 1,
             $"滚轮 {mouse.ScrollCount}，点击 {mouse.ClickCount}");
 
-        // --- 绝对定位（画圆测试依赖它给出精确轨迹；SendInput 会应用指针加速，SetCursorPos 不会）
-        await client.SendTextAsync("""{"type":"moveto","x":400,"y":300}""");
-        await Task.Delay(150);
-        var afterMoveTo = mouse.GetCursorPosition();
-        reporter.Check("moveto 把光标放到精确坐标（不受指针加速影响）",
-            Math.Abs(afterMoveTo.X - 400) <= 1 && Math.Abs(afterMoveTo.Y - 300) <= 1,
-            $"期望 (400,300)，实际 {afterMoveTo}");
-
         // --- 本次实现里 IP 不再是信任依据：换一个源地址发起未认证连接只会被判为未信任，
         //     而不是 ip_locked（同一台手机换 Wi-Fi/换网段必须还能重连）。
         if (lanAddress is not null)
@@ -1260,6 +1238,40 @@ public static class Program
         {
             reporter.Skip("跨网段重连验证", "本机没有可用的局域网 IPv4 地址");
         }
+
+        // --- 键盘注入（真实 SendInput / KEYEVENTF_EXTENDEDKEY）
+        //
+        // 只按「无害」的键：F24（0x87）没有任何默认动作，右 Ctrl（0xA3）是扩展键——用来走通
+        // KEYEVENTF_EXTENDEDKEY 分支，同时它既不会触发快捷键也不会改系统状态（NumLock、
+        // ScrollLock 会改状态，方向键/回车会打到当前窗口，所以都不用）。
+        var keysBefore = keyboard.KeyCount;
+        await client.SendTextAsync("""{"type":"key","vk":135,"down":true}""");
+        await client.SendTextAsync("""{"type":"key","vk":135,"down":false}""");
+        await client.SendTextAsync("""{"type":"key","vk":163,"down":true}""");
+        await Task.Delay(200);
+        reporter.Check("键盘注入被 SendInput 接受",
+            keyboard.KeyCount >= keysBefore + 3 && keyboard.SendInputFailures == 0,
+            $"注入 {keyboard.KeyCount} 次（本次新增 {keyboard.KeyCount - keysBefore}），失败 {keyboard.SendInputFailures} 次");
+
+        var heldExpected = await WaitForAsync(() => keyboard.HeldKeyCount == 1, ShortWait);
+        reporter.Check("按下的扩展键被记账，等待释放", heldExpected, $"HeldKeyCount={keyboard.HeldKeyCount}");
+        var releasedKeys = keyboard.ReleaseAll();
+        reporter.Check("ReleaseAll 松开了仍按下的修饰键（避免电脑端留下卡住的 Ctrl）",
+            releasedKeys == 1 && keyboard.HeldKeyCount == 0,
+            $"释放 {releasedKeys} 个，剩余 {keyboard.HeldKeyCount} 个");
+
+        // --- Unicode 文本注入（真实 SendInput / KEYEVENTF_UNICODE）
+        //
+        // 只注入一个空格 U+0020：它不会触发任何动作、不会改系统状态，却能证明
+        // 「wVk=0 + wScan=码元 + KEYEVENTF_UNICODE」这条路径真的被 SendInput 接受了。
+        // 断言只针对「Windows 是否拒绝了注入」，不针对「谁收到了这个空格」——焦点窗口不由我们决定。
+        var textFailuresBefore = keyboard.SendInputFailures;
+        keyboard.Text(" ");
+        reporter.Check("Unicode 文本注入被 SendInput 接受",
+            keyboard.SendInputFailures == textFailuresBefore,
+            $"注入前失败 {textFailuresBefore} 次，现在 {keyboard.SendInputFailures} 次");
+        reporter.Check("文本注入不改变卡键记账（每个码元当场按下并立刻抬起）",
+            keyboard.HeldKeyCount == 0, $"HeldKeyCount={keyboard.HeldKeyCount}");
 
         await client.CloseAsync();
         server.Stop();
@@ -1379,9 +1391,6 @@ public static class Program
                 reporter.Check("窗口暴露证书固定值 fp",
                     (root.GetProperty("certificatePin").GetString() ?? string.Empty).Length == 22);
                 reporter.Equal("窗口报告协议版本 2", 2, root.GetProperty("protocolVersion").GetInt32());
-                reporter.Check("窗口读取到主屏尺寸",
-                    root.GetProperty("screenWidth").GetInt32() > 0 && root.GetProperty("screenHeight").GetInt32() > 0,
-                    $"{root.GetProperty("screenWidth").GetInt32()}×{root.GetProperty("screenHeight").GetInt32()}");
             }
         }
         catch (Exception ex)

@@ -246,13 +246,6 @@
 
                         <Separator Margin="0,14,0,14" Background="{StaticResource PanelBorderBrush}" />
 
-                        <TextBlock Style="{StaticResource SectionTitle}" Text="通信测试（手机端「诊断」页发起）" />
-                        <TextBlock x:Name="TxtDiag" Style="{StaticResource FieldValue}"
-                                   FontSize="12" TextWrapping="Wrap"
-                                   Text="尚未运行。手机连接后在「诊断」页点「画圆测试」，这里会显示发送/接收/丢包/到达间隔与注入失败次数。" />
-
-                        <Separator Margin="0,14,0,14" Background="{StaticResource PanelBorderBrush}" />
-
                         <TextBlock Style="{StaticResource SectionTitle}" Text="双向文件传输" />
                         <StackPanel Orientation="Horizontal">
                             <Button x:Name="BtnSendFile" Style="{StaticResource ActionButton}"

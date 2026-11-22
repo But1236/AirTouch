@@ -36,9 +36,8 @@
     <string name="manual_port_invalid">端口需为 1-65535 之间的整数</string>
 
     <!-- 控制界面（v2：连接生命周期与错误码都变了） -->
-    <string name="control_tab_airmouse">空中鼠标</string>
+    <string name="control_tab_airmouse">鼠标</string>
     <string name="control_tab_touchpad">触摸板</string>
-    <string name="control_tab_diag">诊断</string>
     <string name="control_btn_left">左键</string>
     <string name="control_btn_right">右键</string>
     <string name="control_btn_scroll_mode">滚轮模式</string>
@@ -62,9 +61,9 @@
     <string name="control_reconnecting_hint">网络中断，正在用设备密钥自动重连，无需重新扫码…</string>
     <string name="control_scroll_mode_on">触摸板滚轮模式：开（单指上下滑动 = 滚轮）</string>
     <string name="control_scroll_mode_off">触摸板滚轮模式：关（单指拖动 = 移动光标）</string>
-    <string name="control_airscroll_mode_on">空中鼠标滚轮模式：开（手机上下俯仰 = 滚轮，光标不动）</string>
-    <string name="control_airscroll_mode_off">空中鼠标滚轮模式：关（手机控制光标移动）</string>
-    <string name="control_scroll_mode_diag_hint">诊断页没有滚轮：请到「空中鼠标」或「触摸板」页再按这个按钮</string>
+    <string name="control_airscroll_mode_on">鼠标滚轮模式：开（上下俯仰手机 = 滚轮，光标不动）</string>
+    <string name="control_airscroll_mode_off">鼠标滚轮模式：关（手机控制光标移动）</string>
+    <string name="control_scroll_mode_keyboard_hint">键盘页没有滚轮：请到「鼠标」或「触摸板」页再按这个按钮（键盘页右上角有微型触控板）</string>
     <string name="control_welcome_error">服务端拒绝了本次连接：%1$s</string>
 
     <!-- 服务端 error{code,message}（协议 §1.2）：按 code 给出可操作的中文提示，避免用户以为只是「掉线」 -->
@@ -72,7 +71,8 @@
     <string name="control_server_error_token_invalid">配对信息不正确，请回到「扫码连接」重新扫码</string>
     <string name="control_server_error_banned">本机已被服务器封禁，请在电脑端点「断开并重置」</string>
     <string name="control_server_error_key_unknown">电脑不认识这台设备了（可能清过信任列表），请重新扫码配对</string>
-    <string name="control_server_error_bad_key">设备密钥不被接受，请在诊断页「重置证书信任」后重新扫码</string>
+    <!-- 电脑端明确拒绝时，指向真正能操作的地方：重置证书信任在配对页 -->
+    <string name="control_server_error_bad_key">设备密钥不被接受，请在配对页「重置证书信任」后重新扫码</string>
     <string name="control_server_error_sig_invalid">设备密钥认证失败，请重新扫码配对</string>
     <string name="control_server_error_stale_auth">手机与电脑时间相差太大，已自动用电脑时间重试</string>
     <string name="control_server_error_trust_revoked">这台设备在电脑端被移除了信任，请重新扫码配对</string>
@@ -87,21 +87,20 @@
     <string name="touchpad_hint_move">单指拖动移动光标 · 单指点击 = 左键 · 双指拖动滚动 · 双指点击 = 右键</string>
     <string name="touchpad_hint_scroll">滚轮模式：单指上下滑动滚动 · 双指点击 = 右键</string>
 
-    <!-- 空中鼠标 -->
+    <!-- 鼠标页 -->
     <string name="airmouse_sensitivity">灵敏度</string>
     <string name="airmouse_sensitivity_value">%1$.2fx</string>
     <string name="airmouse_invert_x">反向（左右）</string>
     <string name="airmouse_invert_y">反向（上下）</string>
     <string name="airmouse_reset">复位</string>
-    <string name="airmouse_hint">手机大致放平、顶部朝前：左右转手腕 = 光标左右，顶部上下俯仰 = 光标上下。滚转（拧手腕）不产生动作。</string>
-    <string name="airmouse_no_sensor">未检测到陀螺仪传感器，空中鼠标不可用。该设备可能没有陀螺仪硬件。</string>
+    <string name="airmouse_hint">握法：手机大致放平、屏幕朝上、顶部朝前，像拿一支激光笔指着屏幕。</string>
+    <string name="airmouse_no_sensor">该设备可能没有陀螺仪硬件。未检测到陀螺仪传感器，已按协议禁用光标移动（不会崩溃）。</string>
     <string name="airmouse_using_uncalibrated">未检测到标准陀螺仪，已降级使用未校准陀螺仪（TYPE_GYROSCOPE_UNCALIBRATED）。</string>
-    <string name="airmouse_status_running">陀螺仪工作中</string>
     <string name="airmouse_status_running_rate">陀螺仪 %1$.0f Hz · 实发 %2$.0f 帧/秒 · 发送间隔 %3$.1f/%4$.1f ms · 共 %5$d 帧</string>
     <string name="airmouse_wifi_lock_note">⚠ Wi-Fi 低延迟锁未获取（%1$s）——帧可能成串到达，看起来一顿一顿</string>
     <string name="airmouse_status_paused">已暂停（界面不可见）</string>
-    <string name="airmouse_mode_move">当前：移动光标（顶部俯仰 = 上下，手腕左右转 = 左右）\n需要滚动时按底部工具栏的「滚轮模式」</string>
-    <string name="airmouse_mode_scroll">当前：滚轮（手机上下俯仰 = 上下滚动，光标不动）\n再按一次「滚轮模式」切回移动光标</string>
+    <string name="airmouse_mode_move">当前：移动光标（手腕左右转 = 左右，顶部上下俯仰 = 上下）\n需要滚动时按底部工具栏的「滚轮模式」</string>
+    <string name="airmouse_mode_scroll">当前：滚轮（上下俯仰手机 = 上下滚动，光标不动）\n再按一次「滚轮模式」切回移动光标</string>
     <string name="airmouse_status_scroll_rate">滚轮模式 · 陀螺仪 %1$.0f Hz · 已滚 %2$d 格</string>
 
     <!-- 文件传输 -->
@@ -120,45 +119,53 @@
     <string name="file_ack_ok">服务端已保存：%1$s（%2$s）</string>
     <string name="file_ack_error">服务端拒收：%1$s</string>
 
-    <!-- 通信诊断 / 画圆测试（协议 §2.4） -->
-    <string name="diag_intro">发送方式：绝对定位用 moveto 直接设定坐标，不受 Windows 指针加速影响；相对位移则走普通触摸板通路，便于对比。频率与每圈耗时决定轨迹速度：频率越高越接近真实帧率压力。测试期间每帧都带序号，电脑侧会统计到达/丢失/重复/乱序与到达间隔，手机侧统计自己的发送间隔，两边合并后给出结论。</string>
-    <string name="diag_intro_short">点上面的按钮，电脑上的光标会依次画两个圆：左边的圆贴住屏幕左、上、下三条边，右边的圆贴住右、上、下三条边。请盯着电脑上的光标看有没有停顿。</string>
-    <string name="diag_plan_unknown">电脑主屏尺寸未知（连接成功后会显示）</string>
-    <string name="diag_plan">电脑主屏 %1$d×%2$d：半径 %3$d，左圆圆心 (%3$d, %4$d)，右圆圆心 (%5$d, %4$d)</string>
-    <string name="diag_plan_display">电脑屏幕刷新率 %1$d Hz（感知流畅度的上限，目标频率超过它不会有额外收益）</string>
-    <string name="diag_report_cursor">电脑：光标实测更新 %1$d Hz（共 %2$d 次，最大间隔 %3$d ms）· 屏幕 %4$d Hz</string>
-    <string name="diag_report_cursor_unknown">电脑：光标实测更新率不可用（采样线程没跑起来）</string>
-    <string name="diag_mode_title">发送方式</string>
-    <string name="diag_mode_absolute">绝对定位（更准）</string>
-    <string name="diag_mode_relative">相对位移（走触摸板通路）</string>
-    <string name="diag_hz_title">发送频率</string>
-    <string name="diag_hz_60">60 Hz</string>
-    <string name="diag_hz_100">100 Hz</string>
-    <string name="diag_hz_144">144 Hz</string>
-    <string name="diag_circle_title">每圈耗时</string>
-    <string name="diag_circle_fast">1.2 秒</string>
-    <string name="diag_circle_normal">2.4 秒</string>
-    <string name="diag_circle_slow">4.8 秒</string>
-    <string name="diag_start">开始画圆测试</string>
-    <string name="diag_stop">停止测试</string>
-    <string name="diag_idle">尚未开始。点上面的按钮后，电脑上的光标会依次画两个圆。</string>
-    <string name="diag_need_connection">尚未连接，无法测试。等连接恢复后再试。</string>
-    <string name="diag_no_screen_size">电脑没有报告屏幕尺寸，将按 1920×1080 估算（轨迹可能超出屏幕）</string>
-    <string name="diag_waiting_report">已发完，正在等电脑回传统计…</string>
-    <string name="diag_result_hint">测试结束后这里显示电脑侧的统计与结论。</string>
-    <string name="diag_running">进行中：计划 %1$d 帧 · %2$d Hz · 每圈 %3$d ms · %4$s\n（请盯着电脑上的光标，看它是否停顿）</string>
-    <string name="diag_progress">第 %1$d/2 圈 · 已发 %2$d/%3$d 帧 · 实际 %4$.1f Hz · 手机侧最大发送间隔 %5$d ms</string>
-    <string name="diag_sent_done">发送完成：%1$d/%2$d 帧，用时 %3$d ms，手机侧最大发送间隔 %4$d ms</string>
-    <string name="diag_report_mode">测试：%1$s · 目标 %2$d Hz · 计划 %3$d 帧</string>
-    <string name="diag_report_client">手机：发送 %1$d 帧，自报用时 %2$d ms，最大发送间隔 %3$d ms</string>
-    <string name="diag_report_server">电脑：收到 %1$d 帧，丢失 %2$d，重复 %3$d，乱序 %4$d</string>
-    <string name="diag_report_gap">到达间隔：最大 %1$d ms，平均 %2$d ms；输入注入失败 %3$d 次</string>
-    <string name="diag_report_actual">实测 %1$.1f Hz，到达率 %2$.1f%%，未到达 %3$d 帧</string>
-    <string name="diag_trust_info_placeholder">服务器身份：—</string>
-    <string name="diag_trust_info">最近一次连接的服务器身份 sid：%1$s</string>
-    <string name="diag_trust_empty">当前没有保存任何证书固定值</string>
-    <string name="diag_trust_cleared">已清除 %1$d 个证书固定值：下次连接会记下新证书，建议重新扫码以带回 fp 严格校验</string>
-    <string name="diag_reset_trust">重置证书信任（电脑换过证书时用）</string>
+    <!-- 键盘模式（协议 §2.6 的 key 帧） -->
+    <string name="control_tab_keyboard">键盘</string>
+    <string name="keyboard_key_esc">Esc</string>
+    <string name="keyboard_key_delete">Del</string>
+    <string name="keyboard_key_prtsc">prtsc</string>
+    <string name="keyboard_btn_fullscreen">全屏</string>
+    <string name="keyboard_btn_exit_fullscreen">取消全屏</string>
+    <!-- 切换按钮显示的是「按下去会切到哪个布局」，而不是当前布局：按钮上写着目标比写着现状更好懂 -->
+    <string name="keyboard_switch_to_t9">9键</string>
+    <string name="keyboard_switch_to_qwerty">QWERTY</string>
+    <string name="keyboard_layout_label">当前布局：%1$s</string>
+    <string name="keyboard_dpad_description">方向滑条：点左半或右半立刻移动，按住连发，横向滑动换方向（上下滑动不触发任何方向）</string>
+    <string name="keyboard_mini_touchpad">微型触控板</string>
+    <string name="keyboard_mini_touchpad_opened">微型触控板已打开，再点一下手形图标收起</string>
+    <string name="keyboard_mini_touchpad_hint">点右上角的手形图标可以打开微型触控板</string>
+    <string name="keyboard_drag_hint">按住这里可以整体挪动键盘</string>
+    <string name="keyboard_btn_text">文本</string>
+    <string name="keyboard_hint_qwerty">Qwerty 全键盘\n只有 Ctrl 是粘滞键：轻点单次生效，连点两下持续生效，再点一下取消。\nShift / Alt / Win 按住即生效：一根手指按住它，另一根手指按字母或方向键。</string>
+    <string name="keyboard_hint_t9">九键拼音\n按数字打拼音，上方候选条选字；「英」切回 QWERTY，⌫ 在组合中退拼音、组合为空时删电脑上的字。</string>
+    <string name="keyboard_hint_fullscreen">完整 104 键\n拖动标题条或键盘四周的边框可以挪动整块键盘；点右侧的手形图标弹出微型触控板。\n打大段文字点「文本」。取消全屏：点「取消全屏」按钮，或把手机转回竖屏。</string>
+    <string name="keyboard_hint_modifier_once">%1$s 单次生效：下一个按键会带上它，然后自动取消</string>
+    <string name="keyboard_hint_modifier_locked">%1$s 持续生效中：再点一下取消</string>
+    <string name="keyboard_hint_offline">尚未连接电脑，按键不会发送。等上方状态变成「已连接」再输入。</string>
+    <string name="keyboard_hint_released">已松开全部按键，避免在电脑上留下卡住的修饰键</string>
+    <string name="keyboard_hint_sent">已发送：%1$s</string>
+    <string name="keyboard_modifier_ctrl">Ctrl</string>
+    <string name="keyboard_modifier_shift">Shift</string>
+    <string name="keyboard_modifier_alt">Alt</string>
+    <string name="keyboard_modifier_win">Win</string>
+
+    <!-- 九键拼音（协议 §2.7 的 text 帧） -->
+    <string name="keyboard_t9_loading">拼音词库载入中…</string>
+    <string name="keyboard_t9_broken">拼音词库不可用，中文候选已关闭（可切到 QWERTY 或用「文本」输入）</string>
+    <string name="keyboard_t9_punct">标点</string>
+    <string name="keyboard_t9_no_candidate">没有候选，可直接点候选条上的数字原样发送</string>
+
+    <!-- 纯文本输入框：唯一刻意使用系统输入法的地方 -->
+    <string name="keyboard_text_sender_title">纯文本输入</string>
+    <string name="keyboard_text_sender_hint">打一大段文字时用这里：可以换行、粘贴，用手机自带输入法输入中文，发送后会直接打到电脑的光标位置。</string>
+    <string name="keyboard_text_sender_placeholder">在这里输入要发到电脑的文字…</string>
+    <string name="keyboard_text_sender_send">发送</string>
+    <string name="keyboard_text_sender_cancel">取消</string>
+    <string name="keyboard_text_sender_empty">还没有输入内容</string>
+    <string name="keyboard_text_sender_count">已输入 %1$d 个字</string>
+    <string name="keyboard_text_sender_sent">已发送 %1$d 个字</string>
+    <string name="keyboard_text_sender_failed">尚未连接电脑，文本没有发出去</string>
+    <string name="keyboard_text_sender_offline">当前未连接，发送会被丢弃</string>
 
     <!-- 单位 -->
     <string name="unit_bytes">%1$d B</string>

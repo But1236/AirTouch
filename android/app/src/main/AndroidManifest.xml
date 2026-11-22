@@ -24,7 +24,7 @@
     <uses-feature
         android:name="android.hardware.camera.autofocus"
         android:required="false" />
-    <!-- 陀螺仪缺失时空中鼠标降级，不强制要求 -->
+    <!-- 陀螺仪/加速度计缺失时鼠标页降级为不可用，不强制要求硬件特性 -->
     <uses-feature
         android:name="android.hardware.sensor.gyroscope"
         android:required="false" />

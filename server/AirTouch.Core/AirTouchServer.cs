@@ -21,16 +21,16 @@ public sealed record ServerStatus(
     string DownloadDirectory,
     string CertificateFingerprint,
     string CertificatePin,
-    int ScreenWidth,
-    int ScreenHeight,
     long MoveCommands,
     long ClickCommands,
     long ScrollCommands,
     long ResetCommands,
+    long KeyCommands,
+    long TextCommands,
     long BytesReceived,
     long BytesSent,
     long SendInputFailures,
-    ServerDiagReport? LastDiagReport);
+    long KeyInputFailures);
 
 public sealed record FileSendProgress(string FileName, long SentBytes, long TotalBytes)
 {
@@ -74,7 +74,7 @@ public sealed class AirTouchServerException : Exception
 /// </remarks>
 public sealed class AirTouchServer : IDisposable
 {
-    public const string Version = "2.0.0";
+    public const string Version = "2.0.2";
 
     /// <summary>One socket that has been admitted but has not proven its device key yet.</summary>
     private sealed class PendingAuth
@@ -92,6 +92,7 @@ public sealed class AirTouchServer : IDisposable
 
     private readonly AirTouchOptions _options;
     private readonly IMouseController _mouse;
+    private readonly IKeyboardController _keyboard;
     private readonly IAirTouchLog _log;
     private readonly ConnectionGuard _guard;
     private readonly ServerCertificate _certificate;
@@ -111,22 +112,26 @@ public sealed class AirTouchServer : IDisposable
     private System.Threading.Timer? _watchdog;
     private DateTimeOffset _lastActivityUtc;
     private DateTimeOffset _lastPingUtc;
-    private CommTestSession? _diagSession;
-    private ServerDiagReport? _lastDiagReport;
-    private (int X, int Y) _diagStartCursor;
     private bool _disposed;
 
     private long _moveCommands;
     private long _clickCommands;
     private long _scrollCommands;
     private long _resetCommands;
+    private long _keyCommands;
+    private long _textCommands;
     private long _bytesReceived;
     private long _bytesSent;
 
-    public AirTouchServer(AirTouchOptions options, IMouseController mouseController, IAirTouchLog? log = null)
+    public AirTouchServer(
+        AirTouchOptions options,
+        IMouseController mouseController,
+        IAirTouchLog? log = null,
+        IKeyboardController? keyboardController = null)
     {
         _options = options;
         _mouse = mouseController;
+        _keyboard = keyboardController ?? new Win32KeyboardController(log);
         _log = log ?? NullLog.Instance;
 
         _guard = new ConnectionGuard(options, _log);
@@ -152,9 +157,6 @@ public sealed class AirTouchServer : IDisposable
 
     public event EventHandler<FileSendProgress>? FileSendProgressChanged;
 
-    /// <summary>Raised when a communication test finishes; the WPF window shows the numbers.</summary>
-    public event EventHandler<ServerDiagReport>? DiagnosticReportReady;
-
     public AirTouchOptions Options => _options;
 
     /// <summary>Address printed in the QR code; may be null when the machine has no usable LAN IPv4.</summary>
@@ -169,17 +171,6 @@ public sealed class AirTouchServer : IDisposable
     public string Sid => _identity.Id;
 
     public IReadOnlyList<TrustedDevice> TrustedDevices => _devices.All;
-
-    public ServerDiagReport? LastDiagReport
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return _lastDiagReport;
-            }
-        }
-    }
 
     public bool IsRunning
     {
@@ -203,8 +194,6 @@ public sealed class AirTouchServer : IDisposable
     {
         lock (_gate)
         {
-            var (width, height) = ScreenInfo.PrimaryScreenSize();
-
             return new ServerStatus(
                 IsRunning: _listener is not null,
                 Port: _options.Port,
@@ -223,16 +212,16 @@ public sealed class AirTouchServer : IDisposable
                 DownloadDirectory: _options.DownloadDirectory,
                 CertificateFingerprint: _certificate.Fingerprint,
                 CertificatePin: CertificatePin,
-                ScreenWidth: width,
-                ScreenHeight: height,
                 MoveCommands: Interlocked.Read(ref _moveCommands),
                 ClickCommands: Interlocked.Read(ref _clickCommands),
                 ScrollCommands: Interlocked.Read(ref _scrollCommands),
                 ResetCommands: Interlocked.Read(ref _resetCommands),
+                KeyCommands: Interlocked.Read(ref _keyCommands),
+                TextCommands: Interlocked.Read(ref _textCommands),
                 BytesReceived: Interlocked.Read(ref _bytesReceived),
                 BytesSent: Interlocked.Read(ref _bytesSent),
                 SendInputFailures: _mouse.SendInputFailures,
-                LastDiagReport: _lastDiagReport);
+                KeyInputFailures: _keyboard.SendInputFailures);
         }
     }
 
@@ -321,7 +310,6 @@ public sealed class AirTouchServer : IDisposable
             _clientDeviceName = null;
             _clientAuthMode = null;
             _pending.Clear();
-            _diagSession = null;
         }
 
         lock (_transferGate)
@@ -370,7 +358,6 @@ public sealed class AirTouchServer : IDisposable
             _clientKeyId = null;
             _clientDeviceName = null;
             _clientAuthMode = null;
-            _diagSession = null;
         }
 
         lock (_transferGate)
@@ -681,7 +668,6 @@ public sealed class AirTouchServer : IDisposable
                 _clientKeyId = null;
                 _clientDeviceName = null;
                 _clientAuthMode = null;
-                _diagSession = null;
                 wasActive = true;
             }
         }
@@ -709,6 +695,16 @@ public sealed class AirTouchServer : IDisposable
 
         if (wasActive)
         {
+            // The phone latches Ctrl/Shift/Alt/Win for one-handed shortcuts (the sticky keys in
+            // docs/PROTOCOL.md §2.6). If the socket dies while one of them is down and nobody lets go,
+            // the PC is left with a physically stuck modifier and every later real keystroke becomes a
+            // shortcut. Releasing here is the only place that cannot be skipped.
+            var released = _keyboard.ReleaseAll();
+            if (released > 0)
+            {
+                _log.Warn($"连接结束，已释放 {released} 个仍按下的按键");
+            }
+
             _guard.MarkDisconnected(address);
             RaiseStatusChanged();
         }
@@ -748,13 +744,6 @@ public sealed class AirTouchServer : IDisposable
             case MessageKind.Move:
                 _mouse.Move(command.Dx, command.Dy);
                 Interlocked.Increment(ref _moveCommands);
-                NoteDiagnosticFrame(command.Seq);
-                break;
-
-            case MessageKind.MoveTo:
-                _mouse.MoveTo(command.X, command.Y);
-                Interlocked.Increment(ref _moveCommands);
-                NoteDiagnosticFrame(command.Seq);
                 break;
 
             case MessageKind.Click:
@@ -770,6 +759,17 @@ public sealed class AirTouchServer : IDisposable
             case MessageKind.Reset:
                 _mouse.ResetToCenter();
                 Interlocked.Increment(ref _resetCommands);
+                break;
+
+            case MessageKind.Key:
+                _keyboard.Key(command.VirtualKey, command.KeyDown, command.KeyExtended);
+                Interlocked.Increment(ref _keyCommands);
+                break;
+
+            case MessageKind.Text:
+                // 不经过 _pressed 记账：text 帧没有按键状态，每个字符都是当场按下并立刻抬起。
+                _keyboard.Text(command.Text);
+                Interlocked.Increment(ref _textCommands);
                 break;
 
             case MessageKind.FileHeader:
@@ -790,14 +790,6 @@ public sealed class AirTouchServer : IDisposable
 
                 _log.Info($"设备信息：{command.DeviceName ?? "未知设备"}（App {command.AppVersion ?? "未知"}）");
                 RaiseStatusChanged();
-                break;
-
-            case MessageKind.DiagBegin:
-                BeginDiagnostics(command);
-                break;
-
-            case MessageKind.DiagReport:
-                FinishDiagnostics(socket, command);
                 break;
 
             case MessageKind.Ping:
@@ -1014,23 +1006,14 @@ public sealed class AirTouchServer : IDisposable
             _ = Task.Delay(150).ContinueWith(_ => TryClose(replaced, 1001), TaskScheduler.Default);
         }
 
-        var (width, height) = ScreenInfo.PrimaryScreenSize();
-
         _log.Info($"设备已连接：{pending.Address}（{deviceName ?? "未知设备"}，{(wasPairing ? "首次配对" : "已信任设备重连")}）");
         TrySend(socket, Protocol.BuildWelcome(
             Version,
             AdvertisedAddress ?? "127.0.0.1",
-            _options.Port,
             _identity.Id,
-            _options.MaxFileSize,
-            _options.ChunkSize,
-            width,
-            height,
             ScreenInfo.PrimaryScreenRefreshHz(),
-            deviceName,
             keyId,
-            wasPairing ? "pair" : "resume",
-            _devices.Count));
+            wasPairing ? "pair" : "resume"));
 
         RaiseStatusChanged();
     }
@@ -1059,110 +1042,6 @@ public sealed class AirTouchServer : IDisposable
         _log.Warn($"认证未通过：{code}（{message}）");
         TrySend(socket, Protocol.BuildError(code, message));
         _ = Task.Delay(150).ContinueWith(_ => TryClose(socket, closeCode), TaskScheduler.Default);
-        RaiseStatusChanged();
-    }
-
-    // ---------------- 通信测试诊断 ----------------
-
-    private void BeginDiagnostics(ControlMessage command)
-    {
-        var diag = command.Diag;
-        if (diag is null)
-        {
-            return;
-        }
-
-        lock (_gate)
-        {
-            _diagStartCursor = _mouse.GetCursorPosition();
-            _diagSession = new CommTestSession(
-                diag.TestKind,
-                diag.Mode,
-                diag.Planned,
-                diag.TargetHz,
-                diag.CircleMs,
-                DateTimeOffset.UtcNow);
-        }
-
-        // 光标采样线程与测试同生命周期：它测的是"光标位置每秒真正变化了几次"。
-        // 这个数字是"看起来流不流畅"的直接指标，也是把责任分给服务端还是手机/网络的关键证据。
-        _diagSession.StartCursorSampling(() => _mouse.GetCursorPosition());
-
-        _log.Info($"开始通信测试：{diag.TestKind}/{diag.Mode}，目标 {diag.TargetHz} Hz，计划 {diag.Planned} 帧");
-    }
-
-    private void NoteDiagnosticFrame(int? seq)
-    {
-        CommTestSession? session;
-        lock (_gate)
-        {
-            session = _diagSession;
-        }
-
-        session?.NoteFrame(seq, DateTimeOffset.UtcNow);
-    }
-
-    private void FinishDiagnostics(IWebSocketConnection socket, ControlMessage command)
-    {
-        var client = command.Diag ?? new ClientDiagReport("circle", "abs", 0, 0, 0, 0, 0, 0, 0, 0);
-        CommTestSession? session;
-        (int X, int Y) start;
-
-        lock (_gate)
-        {
-            session = _diagSession;
-            _diagSession = null;
-            start = _diagStartCursor;
-        }
-
-        if (session is null)
-        {
-            _log.Warn("收到 diag_report 但没有生效中的测试，已忽略");
-            return;
-        }
-
-        var report = session.Finish(client, start, _mouse.GetCursorPosition(), _mouse.SendInputFailures, DateTimeOffset.UtcNow);
-
-        lock (_gate)
-        {
-            _lastDiagReport = report;
-        }
-
-        _log.Info(
-            $"通信测试结果：手机发送 {report.ClientSent} 帧（用时 {report.ClientElapsedMs} ms，手机侧最大发送间隔 " +
-            $"{report.ClientMaxSendGapMs} ms）；电脑收到 {report.Received} 帧，丢 {report.Lost}，重复 {report.Duplicated}，" +
-            $"乱序 {report.OutOfOrder}，最大到达间隔 {report.MaxGapMs} ms，平均 {report.MeanGapMs} ms；" +
-            $"光标实测更新 {report.CursorHz} Hz（采样 {report.CursorPollHz} Hz，最大间隔 {report.CursorMaxGapMs} ms，屏幕 {report.DisplayHz} Hz）；" +
-            $"SendInput 失败 {report.SendInputFailures} 次；光标 {report.StartX},{report.StartY} → {report.EndX},{report.EndY}");
-
-        var (width, height) = ScreenInfo.PrimaryScreenSize();
-
-        TrySend(socket, Protocol.BuildDiagReport(
-            report.TestKind,
-            report.Mode,
-            report.Planned,
-            report.Received,
-            report.FirstSeq,
-            report.LastSeq,
-            report.Lost,
-            report.Duplicated,
-            report.OutOfOrder,
-            report.MaxGapMs,
-            report.MeanGapMs,
-            report.DurationMs,
-            (int)report.SendInputFailures,
-            report.StartX,
-            report.StartY,
-            report.EndX,
-            report.EndY,
-            width,
-            height,
-            report.CursorUpdates,
-            report.CursorPollHz,
-            report.CursorMaxGapMs,
-            report.DisplayHz));
-
-        DiagnosticReportReady?.Invoke(this, report);
         RaiseStatusChanged();
     }
 

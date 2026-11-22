@@ -58,20 +58,19 @@ class AirTouchClient(
         FAILED
     }
 
-    /** 服务端 welcome 携带的全部会话信息（协议 §1.2 第 3 步）。 */
+    /**
+     * 服务端 welcome 携带的会话信息（协议 §1.2 第 3 步）。
+     *
+     * 只保留界面/重连真正会用到的字段：电脑版本、IP、会话 id、设备密钥 id、认证模式、刷新率。
+     * 历史版本里 welcome 还带过 `port` / `deviceName` / `trustedCount` / `maxFileSize` /
+     * `chunkSize` / `screenWidth` / `screenHeight`，服务端已不再下发，这里也不再解析。
+     */
     data class SessionInfo(
         val serverVersion: String,
         val serverIp: String,
-        val port: Int,
         val sid: String,
-        val deviceName: String?,
         val keyId: String?,
         val authMode: String,
-        val trustedCount: Int,
-        val maxFileSize: Long,
-        val chunkSize: Int,
-        val screenWidth: Int,
-        val screenHeight: Int,
         /** 电脑主显示器刷新率（Hz，0 表示电脑没报）。感知上的帧率上限就是它。 */
         val displayHz: Int
     )
@@ -115,9 +114,6 @@ class AirTouchClient(
 
         /** 正在自动重连（第 attempt 次，等待 delayMs 毫秒） */
         fun onReconnecting(attempt: Int, delayMs: Long) {}
-
-        /** 服务端通信测试结果（协议 §2.4） */
-        fun onDiagReport(report: ServerDiagReport) {}
 
         /** 连接关闭（code == -1 表示本地主动关闭前没有对端关闭帧） */
         fun onClosed(code: Int, reason: String)
@@ -260,7 +256,7 @@ class AirTouchClient(
      *
      * ## 病历（用户实测：平均到达间隔 6ms，最大 236ms）
      *
-     * 空中鼠标每帧只有约 40 字节的小包，每秒 144~500 个：
+     * 鼠标页每帧只有约 40 字节的小包，每秒 144~500 个：
      * 1. Nagle 规则：有未确认数据时，**小包要等 ACK 才能发**；
      * 2. Windows 的延迟 ACK 最多等 200ms 才回 ACK；
      * 3. 于是手机攒着不发 → 电脑不回 ACK → 手机继续攒 … 直到延迟 ACK 定时器到期，
@@ -325,17 +321,51 @@ class AirTouchClient(
         }
     }
 
-    fun sendMove(dx: Int, dy: Int, seq: Int? = null): Boolean =
-        sendText(Protocol.buildMove(dx, dy, seq))
-
-    fun sendMoveTo(x: Int, y: Int, seq: Int? = null): Boolean =
-        sendText(Protocol.buildMoveTo(x, y, seq))
+    fun sendMove(dx: Int, dy: Int): Boolean =
+        sendText(Protocol.buildMove(dx, dy))
 
     fun sendClick(button: String): Boolean = sendText(Protocol.buildClick(button))
 
     fun sendScroll(amount: Int): Boolean = sendText(Protocol.buildScroll(amount))
 
     fun sendReset(): Boolean = sendText(Protocol.buildReset())
+
+    /**
+     * 键盘：发送一次按键状态变化（协议 §2.6）。
+     *
+     * 与鼠标指令共用同一条 WebSocket、同一套认证与重连逻辑——键盘没有独立通道，连接没建立时
+     * 帧会被 [sendText] 直接丢弃（返回 false），界面据此提示。
+     */
+    fun sendKey(vk: Int, down: Boolean, extended: Boolean? = null): Boolean =
+        sendText(Protocol.buildKey(vk, down, extended))
+
+    /**
+     * 键盘：注入一段 Unicode 文本（协议 §2.7）。
+     *
+     * 名字刻意不叫 `sendText`：那个已经被「发送一个原始 JSON 文本帧」占用了，而这里发的是
+     * **要打到电脑上的文字**。中文、emoji 都走这条路，虚拟键码表达不了它们。
+     *
+     * 长文本按 [Protocol.TEXT_CHUNK_LENGTH] 分片连发，分片不切开代理对。
+     *
+     * @return 是否所有分片都成功交给了 WebSocket（断线时返回 false，界面据此提示）
+     */
+    fun sendUnicodeText(text: String): Boolean {
+        if (text.isEmpty()) return true
+        var allSent = true
+        var index = 0
+        while (index < text.length) {
+            var end = minOf(index + Protocol.TEXT_CHUNK_LENGTH, text.length)
+            // 别把一个代理对切成两半：宁可这一片少一个字
+            if (end < text.length && Character.isHighSurrogate(text[end - 1])) end -= 1
+            // end 一旦退化到 index（理论上只在 limit 极小时发生），退回到原切点，避免死循环
+            if (end <= index) end = minOf(index + Protocol.TEXT_CHUNK_LENGTH, text.length)
+
+            val frame = Protocol.buildText(text.substring(index, end)) ?: break
+            allSent = sendText(frame) && allSent
+            index = end
+        }
+        return allSent
+    }
 
     fun sendFileHeader(name: String, size: Long): Boolean =
         sendText(Protocol.buildFileHeader(name, size))
@@ -346,26 +376,6 @@ class AirTouchClient(
 
     fun sendHello(deviceName: String, appVersion: String): Boolean =
         sendText(Protocol.buildHello(deviceName, appVersion))
-
-    fun sendDiagBegin(testKind: String, mode: String, planned: Int, targetHz: Int, circleMs: Int): Boolean =
-        sendText(Protocol.buildDiagBegin(testKind, mode, planned, targetHz, circleMs))
-
-    fun sendDiagReport(
-        testKind: String,
-        mode: String,
-        sent: Int,
-        planned: Int,
-        firstSeq: Int,
-        lastSeq: Int,
-        elapsedMs: Long,
-        targetHz: Int,
-        circleMs: Int,
-        maxSendGapMs: Int
-    ): Boolean = sendText(
-        Protocol.buildDiagReport(
-            testKind, mode, sent, planned, firstSeq, lastSeq, elapsedMs, targetHz, circleMs, maxSendGapMs
-        )
-    )
 
     // ---------------- 关闭 / 重连 ----------------
 
@@ -602,8 +612,6 @@ class AirTouchClient(
 
             Protocol.TYPE_PONG -> listener.onPong()
 
-            "diag_report" -> listener.onDiagReport(parseDiagReport(o))
-
             else -> listener.onUnknownText(type, text)
         }
     }
@@ -660,16 +668,9 @@ class AirTouchClient(
         val info = SessionInfo(
             serverVersion = o.optString("serverVersion", ""),
             serverIp = o.optString("serverIp", ""),
-            port = o.optInt("port", serverPort),
             sid = o.optString("sid", ""),
-            deviceName = o.optString("deviceName", "").ifEmpty { null },
             keyId = o.optString("keyId", "").ifEmpty { null },
             authMode = o.optString("authMode", ""),
-            trustedCount = o.optInt("trustedCount", 0),
-            maxFileSize = optLong(o, "maxFileSize", Protocol.MAX_FILE_SIZE),
-            chunkSize = o.optInt("chunkSize", Protocol.CHUNK_SIZE),
-            screenWidth = o.optInt("screenWidth", 0),
-            screenHeight = o.optInt("screenHeight", 0),
             displayHz = o.optInt("displayHz", 0)
         )
 
@@ -691,34 +692,6 @@ class AirTouchClient(
         setState(State.CONNECTED)
         listener.onWelcome(info)
     }
-
-    private fun parseDiagReport(o: JSONObject): ServerDiagReport = ServerDiagReport(
-        testKind = o.optString("testKind", "circle"),
-        mode = o.optString("mode", "abs"),
-        planned = o.optInt("planned", 0),
-        received = o.optInt("received", 0),
-        firstSeq = o.optInt("firstSeq", 0),
-        lastSeq = o.optInt("lastSeq", 0),
-        lost = o.optInt("lost", 0),
-        duplicated = o.optInt("duplicated", 0),
-        outOfOrder = o.optInt("outOfOrder", 0),
-        maxGapMs = o.optInt("maxGapMs", 0),
-        meanGapMs = o.optInt("meanGapMs", 0),
-        durationMs = optLong(o, "durationMs", 0L),
-        clientSent = o.optInt("clientSent", 0),
-        clientElapsedMs = optLong(o, "clientElapsedMs", 0L),
-        clientMaxSendGapMs = o.optInt("clientMaxSendGapMs", 0),
-        targetHz = o.optInt("targetHz", 0),
-        sendInputFailures = optLong(o, "sendInputFailures", 0L),
-        startX = o.optInt("startX", 0),
-        startY = o.optInt("startY", 0),
-        endX = o.optInt("endX", 0),
-        endY = o.optInt("endY", 0),
-        cursorUpdates = o.optInt("cursorUpdates", 0),
-        cursorPollHz = o.optInt("cursorPollHz", 0),
-        cursorMaxGapMs = o.optInt("cursorMaxGapMs", 0),
-        displayHz = o.optInt("displayHz", 0)
-    )
 
     private fun startReceive(o: JSONObject) {
         // 一个方向同一时刻只允许一个进行中的传输（协议 §3.2）

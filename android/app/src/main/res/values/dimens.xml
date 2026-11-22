@@ -16,4 +16,31 @@
     <dimen name="at_toolbar_button_min_height">44dp</dimen>
     <dimen name="at_reset_button_size">72dp</dimen>
     <dimen name="at_corner_radius">10dp</dimen>
+
+    <!-- 键盘模式 -->
+    <!-- 功能栏按钮高度：44dp 是能舒服点到的下限，再高就会把键盘往上挤 -->
+    <dimen name="at_keybar_button_height">40dp</dimen>
+    <!--
+      按文字长度给每个按钮一个下限宽度。宽度靠 minWidth 而不是固定 width：
+      换语言 / 换字体时文字变长，按钮自己会长开，不会把字截断。
+    -->
+    <dimen name="at_keybar_button_esc_width">48dp</dimen>
+    <dimen name="at_keybar_button_switch_width">60dp</dimen>
+    <dimen name="at_keybar_button_text_width">48dp</dimen>
+    <dimen name="at_keybar_button_del_width">48dp</dimen>
+    <dimen name="at_keybar_button_prtsc_width">56dp</dimen>
+    <dimen name="at_keybar_button_fullscreen_width">64dp</dimen>
+    <dimen name="at_keybar_button_exit_width">96dp</dimen>
+
+    <!-- 候选条左边的组合串（如 64'426）：给个下限宽度，避免候选芯片随拼音长短左右横跳 -->
+    <dimen name="at_candidate_label_width">64dp</dimen>
+
+    <!-- 全屏键盘的标题条：放「取消全屏」与手形图标，同时也是拖动手柄 -->
+    <dimen name="at_keyboard_header_height">44dp</dimen>
+    <!-- 手形图标：40dp 偏小，全屏下隔着一段距离就容易看不清，提到 44dp -->
+    <dimen name="at_hand_icon_size">44dp</dimen>
+
+    <!-- 悬浮微型触控板：比触摸板页小得多，但要够放下一次完整的光标拖动 -->
+    <dimen name="at_mini_touchpad_width">196dp</dimen>
+    <dimen name="at_mini_touchpad_height">112dp</dimen>
 </resources>

@@ -50,10 +50,26 @@
       "Widget.AirTouch" 这个并不存在的样式，链接阶段直接报：
           error: resource style/Widget.AirTouch ... not found
       显式写 parent="" 表示「确实没有父样式」，从而关闭这条隐式推断。
-      这五个样式彼此独立、也没有共同的基类属性，所以 parent="" 是它们的准确意图。
+      下面每个样式彼此独立、也没有共同的基类属性，所以 parent="" 是它们的准确意图。
     -->
     <style name="Widget.AirTouch.ToolbarButton" parent="">
         <item name="android:minHeight">@dimen/at_toolbar_button_min_height</item>
+        <item name="android:textSize">@dimen/at_text_small</item>
+        <item name="android:textColor">@color/at_text</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:paddingStart">@dimen/at_space_xs</item>
+        <item name="android:paddingEnd">@dimen/at_space_xs</item>
+        <item name="android:background">@drawable/bg_at_button</item>
+    </style>
+
+    <!--
+      键盘功能栏按钮：和工具栏按钮同一套配色，但更矮更窄 —— 竖屏一行里要放下
+      Esc / 布局切换 / Del / prtsc 四个按钮，每个都得压到 40dp 高、48~60dp 宽。
+      宽度用 android:minWidth 在布局里逐个给，不写死 width，换字体时按钮能自己长开。
+    -->
+    <style name="Widget.AirTouch.KeyBarButton" parent="">
+        <item name="android:minHeight">@dimen/at_keybar_button_height</item>
+        <item name="android:minWidth">0dp</item>
         <item name="android:textSize">@dimen/at_text_small</item>
         <item name="android:textColor">@color/at_text</item>
         <item name="android:textAllCaps">false</item>

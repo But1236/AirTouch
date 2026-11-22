@@ -8,14 +8,12 @@
 - 二进制帧：文件分块数据，**必须**紧跟在同方向的 `file_header` 文本帧之后
 - 协议版本：`2`
 
-v1 → v2 的三处结构性变化，先看这段就能理解全篇：
+v1 → v2 的两处结构性变化，先看这段就能理解全篇：
 
 1. **认证代替「token 即身份」**：`token` 只在首次配对时用一次，用完即毁；之后手机用自己的
    ECC 私钥签名证明身份（§1.2）。
 2. **不再绑定来源 IP**：身份是「设备公钥」，不是「IP」。换 Wi-Fi、路由器重新分配 IP 都能直接重连，
    同时也只允许一台设备（§1.2、§4）。
-3. **新增 `moveto`（绝对定位）与 `diag_*`（通信测试）**：前者用于绕开 Windows 指针加速、
-   得到可复现的轨迹；后者用于把「卡顿到底卡在哪一层」量化（§2.4、§5）。
 
 ---
 
@@ -74,7 +72,7 @@ wss://{IP}:{PORT}/ws?token={TOKEN}&sid={SID}&fp={FP}
 
 ```json
 {"type":"auth_req","auth_v":1,"keyId":"…","token":"…","pubKey":"…","sign":"…","ts":1731300000,
- "deviceName":"Xiaomi 14","appVersion":"2.0.0"}
+ "deviceName":"Xiaomi 14","appVersion":"2.0.2"}
 ```
 
 | 字段 | 说明 |
@@ -95,9 +93,8 @@ AirTouch-Auth-v1\n{sid}\n{nonce}\n{keyId}\n{ts}
 **第 3 步 `welcome`（服务端 → 客户端）**
 
 ```json
-{"type":"welcome","protocolVersion":2,"serverVersion":"2.0.0","serverIp":"192.168.1.7","port":8443,
- "sid":"…","maxFileSize":536870912,"chunkSize":65536,"screenWidth":2560,"screenHeight":1440,
- "displayHz":180,"deviceName":"Xiaomi 14","keyId":"…","authMode":"resume","trustedCount":1}
+{"type":"welcome","protocolVersion":2,"serverVersion":"2.0.2","serverIp":"192.168.1.7",
+ "sid":"…","displayHz":180,"keyId":"…","authMode":"resume"}
 ```
 
 | 字段 | 说明 |
@@ -106,12 +103,9 @@ AirTouch-Auth-v1\n{sid}\n{nonce}\n{keyId}\n{ts}
 | `serverVersion` | 应用版本号（不是协议版本） |
 | `serverIp` | 服务端认为自己所在的本机地址（仅供参考，客户端应以实际连接地址为准） |
 | `sid` | 服务器身份，客户端应持久化用于后续重连 |
-| `maxFileSize` / `chunkSize` | 单文件上限与分块大小（§3） |
-| `screenWidth` / `screenHeight` | 主屏像素尺寸（`moveto` 与画圆测试用得到；`0` 表示未知） |
 | `displayHz` | 主显示器刷新率（**v2 追加，可选**；`0` 表示查不到）。这是感知流畅度的上限：发送频率超过它不会有额外收益 |
-| `deviceName` / `keyId` | 服务端记下的本设备信息 |
+| `keyId` | 服务端记下的本设备密钥 id |
 | `authMode` | `pair` 或 `resume`，客户端据此提示「首次配对 / 免扫码重连」 |
-| `trustedCount` | 服务端当前信任的设备数量 |
 
 **证书校验规则（客户端，必须实现）**
 
@@ -184,14 +178,13 @@ URL 与 `auth_req` 的校验顺序固定为：
 
 | type | 载荷 | 说明 |
 | --- | --- | --- |
-| `move` | `dx:int`, `dy:int`, `seq?:int` | 鼠标相对移动（像素，右/下为正）。`dx`/`dy` 被截断到 `[-4096, 4096]`；`seq` 仅用于通信测试统计 |
-| `moveto` | `x:int`, `y:int`, `seq?:int` | **绝对定位**到主屏坐标（`SetCursorPos`，左上为原点）。截断到 `[-32767, 32767]`，实际落点再夹到主屏范围内。绕开 Windows 指针加速，轨迹可与手机端算出的一致 |
+| `move` | `dx:int`, `dy:int` | 鼠标相对移动（像素，右/下为正）。`dx`/`dy` 被截断到 `[-4096, 4096]` |
 | `click` | `button:"left"\|"right"` | 单击；`button` 缺省视为 `left` |
 | `scroll` | `amount:int` | 滚轮；正数上滚，负数下滚。截断到 `[-120, 120]` |
 | `reset` | 无 | 光标复位到主屏中心 |
+| `key` | `vk:int`, `down:bool`, `ext?:bool` | **键盘按键的一次状态变化**（§2.6）。`vk` 为 Win32 虚拟键码（`1..255`，越界被截断）；`down=true` 是 KEY_DOWN、`false` 是 KEY_UP；`ext` 可选，显式指定 `KEYEVENTF_EXTENDEDKEY` |
+| `text` | `s:string` | **注入一段 Unicode 文本**（§2.7）。与键盘布局无关，中文/emoji 都走这条；`s` 截断到 256 个 UTF-16 码元。缺 `s` 或 `s` 不是 JSON 字符串时整帧被忽略 |
 | `auth_req` | 见 §1.2 | 认证应答 |
-| `diag_begin` | `testKind:string`, `mode:string`, `planned:int`, `targetHz:int`, `circleMs:int` | 通信测试开始（§2.4） |
-| `diag_report` | 见 §2.4 | 客户端侧的测试统计 |
 | `file_header` | `fileName:string`, `fileSize:int`, `fileId?:string` | 文件传输开始（见 §3） |
 | `file_end` | `fileId?:string` | 可选：显式声明本次传输结束（正常实现靠字节数判定） |
 | `hello` | `deviceName?:string`, `appVersion?:string` | 可选：认证通过后上报设备信息，供服务端 UI 显示 |
@@ -201,10 +194,11 @@ URL 与 `auth_req` 的校验顺序固定为：
 
 ```json
 {"type":"move","dx":10,"dy":-5}
-{"type":"moveto","x":540,"y":960,"seq":17}
 {"type":"click","button":"left"}
 {"type":"scroll","amount":3}
 {"type":"reset"}
+{"type":"key","vk":17,"down":true}
+{"type":"text","s":"你好"}
 {"type":"file_header","fileName":"test.txt","fileSize":1024}
 ```
 
@@ -214,7 +208,6 @@ URL 与 `auth_req` 的校验顺序固定为：
 | --- | --- | --- |
 | `auth_challenge` | 见 §1.2 | 连接建立后的第一帧 |
 | `welcome` | 见 §1.2 | 认证通过后的第一帧 |
-| `diag_report` | 见 §2.4 | 服务端侧的测试统计（仅在测试期间） |
 | `file_header` | `fileName:string`, `fileSize:int`, `fileId?:string` | 服务端向手机发文件（见 §3） |
 | `file_end` | `fileId?:string` | 可选：显式结束 |
 | `file_ack` | `fileName`, `status:"ok"\|"error"`, `bytes:int`, `savedPath?:string`, `message?:string` | 服务端对**收到**的文件的回执 |
@@ -227,58 +220,8 @@ URL 与 `auth_req` 的校验顺序固定为：
 - 接收方收到未知 `type` 时应忽略（可选：回 `error` 且 `code:"unknown_type"`，但不得关闭连接）。
 - `dx`/`dy`/`amount`/`fileSize` 解析失败（非数字）时按 `0` 处理。
 
-### 2.4 通信测试（`diag_*`）
-
-用途：手机「在动」而电脑光标「不动」时，把原因定位到三层中的一层 —— **手机没发 / 网络丢帧 /
-Windows 拒绝输入注入**。做法是让手机按固定频率发已知轨迹，每帧带递增 `seq`，PC 端统计到达情况。
-
-时序：
-
-```
-客户端                                      服务端
-  |-- diag_begin {testKind,mode,planned,targetHz,circleMs} -->|  开始按 seq 记账、记录起始光标位置
-  |-- move/moveto {…,seq=1} ------------------------------->|
-  |-- move/moveto {…,seq=2} ------------------------------->|
-  |                        …                                |
-  |-- move/moveto {…,seq=N} ------------------------------->|
-  |-- diag_report {…客户端自测数据…} ---------------------->|  计算 lost/duplicated/outOfOrder/gap
-  |<-- diag_report {…服务端统计…} --------------------------|  两端数据合并成结论
-```
-
-`diag_report` 字段（两个方向同名同义，客户端上报时省略服务端才有的字段）：
-
-| 字段 | 方向 | 说明 |
-| --- | --- | --- |
-| `testKind` | 双向 | 目前只有 `circle` |
-| `mode` | 双向 | `abs`（`moveto`）或 `rel`（`move`） |
-| `planned` | 双向 | 计划发送的帧数 |
-| `sent` | 手机 → PC | 手机实际发出的帧数 |
-| `received` | PC → 手机 | PC 收到的帧数 |
-| `firstSeq` / `lastSeq` | 双向 | 首末序号（用于判断是否中途重启） |
-| `elapsedMs` | 手机 → PC | 手机自报耗时 |
-| `durationMs` | PC → 手机 | PC 测得的持续时间 |
-| `targetHz` / `circleMs` | 双向 | 目标频率、每圈耗时 |
-| `maxSendGapMs` | 手机 → PC | 手机侧两次发送之间的最大间隔（手机自己卡没卡） |
-| `maxGapMs` / `meanGapMs` | PC → 手机 | 到达间隔（网络抖不抖） |
-| `lost` / `duplicated` / `outOfOrder` | PC → 手机 | 按 `seq` 算出的丢帧、重复、乱序 |
-| `sendInputFailures` | PC → 手机 | `SendInput` 失败累计次数（Windows 拒绝注入） |
-| `startX` / `startY` / `endX` / `endY` | PC → 手机 | 测试首末光标位置（用于核对轨迹是否被指针加速改写） |
-| `screenWidth` / `screenHeight` | PC → 手机 | PC 主屏尺寸 |
-| `cursorUpdates` / `cursorPollHz` / `cursorMaxGapMs` | PC → 手机 | **v2 追加，可选**：PC 侧用 `GetCursorPos` 高频轮询测出的「光标位置真正变化了几次」、轮询频率、两次变化之间的最大间隔 |
-| `displayHz` | PC → 手机 | **v2 追加，可选**：PC 主显示器刷新率（`0` 表示查不到） |
-
-结论（两端算法一致，也写在两端 UI 上）：
-
-| 现象 | 结论 |
-| --- | --- |
-| 手机 max send gap 大 | 手机端卡顿（UI/线程被阻塞，帧根本没发出去） |
-| 到达 gap 大、丢了帧、但手机侧 gap 正常 | 网络/Wi-Fi 链路问题 |
-| 帧全到、gap 正常，但 `sendInputFailures` 增长或光标未动 | Windows 输入注入被拒绝（权限/UAC/游戏反作弊） |
-| 帧全到、gap 正常，但 `cursorUpdates / duration` 明显低于 `targetHz` | 「每次位移不足 1 物理像素」——光标只能整像素跳，慢速移动时更新次数必然低于发送次数（把目标频率降到屏幕刷新率附近或调高灵敏度） |
-
-> `cursorUpdates` 是三个「帧率」里唯一来自**可见侧**的数字：
-> `sent` 是手机发的、`received` 是 PC 收到的、`cursorUpdates` 才是屏幕上真正动了几次的。
-> 三者都存在时，「是服务端出问题了吗」这个问题就不需要猜了。
+> **编号说明**：§2.4（通信测试 `diag_*`）已在本次改动中整体删除（服务端与手机端同时移除）。
+> 编号刻意保留、不再复用，以免历史提交与代码注释里对「协议 §2.x」的引用失效。
 
 ### 2.5 传输层要求：`TCP_NODELAY` 必须两端都开
 
@@ -288,20 +231,106 @@ Windows 拒绝输入注入**。做法是让手机按固定频率发已知轨迹�
   数据时小包被攒住；
 - 接收方（Windows）延迟 ACK 最多等 200ms 才回 ACK；
 - 于是出现「平均间隔只有几毫秒、每隔一会儿冻结 200ms 级」的典型症状 —— 真机实测
-  `maxGapMs = 236` / `meanGapMs = 6` 就是这个特征。实体鼠标走 USB HID 中断传输，与 Nagle 无关，
+  「平均间隔 6 ms、最大间隔 236 ms」就是这个特征。实体鼠标走 USB HID 中断传输，与 Nagle 无关，
   所以它一直看起来流畅，这个对比一度让人怀疑服务端。
 
 因此：**服务端**（Fleck 已设置 `NoDelay = true`）与**客户端**（Android 端用自定义 `SocketFactory`
-设置 `tcpNoDelay = true`）都必须开启。诊断时用上表把「手机自报发送间隔」与「PC 到达间隔」
-并列比较即可定位责任方。
+设置 `tcpNoDelay = true`）都必须开启。
 
-画圆轨迹（两端必须一致，方便肉眼核对）：
+### 2.6 键盘（`key`）
 
-- 半径 `r = screenHeight / 2`；
-- 圆 1 圆心 `(r, screenHeight/2)` → 同时与**左、上、下**三条边相切；
-- 圆 2 圆心 `(screenWidth - r, screenHeight/2)` → 同时与**右、上、下**三条边相切；
-- 采样点数 `samples = round(circleMs/1000 * targetHz)`，共 `planned = 2 × samples` 帧；
-- 使用绝对时间点调度（`postAtTime`），误差不累积。
+手机端的「键盘模式」把屏幕上的按键阵列变成电脑上的真实按键。协议层只有**一个**消息类型，
+并且它表达的是**一次按键状态变化**，不是一次「组合键」：
+
+```json
+{"type":"key","vk":17,"down":true}     ← Ctrl 按下
+{"type":"key","vk":67,"down":true}     ← C 按下
+{"type":"key","vk":67,"down":false}    ← C 抬起
+{"type":"key","vk":17,"down":false}    ← Ctrl 抬起
+```
+
+上面四条就是一次 `Ctrl+C`。**为什么不做成一条「组合键」消息**：
+
+1. 长按（游戏里持续前进、按住 Ctrl 多选）必须能把「按下」和「抬起」分开两个时刻发出去，
+   组合消息无法表达「C 抬起之后 Ctrl 还按着」这种状态；
+2. 一次组合消息要求服务端自己维护「按顺序按下修饰键 → 按键 → 逆序松开」，等于把一份状态机
+   复制到两端；而现在两端只需要对「一次状态变化」达成一致；
+3. 手机端的**粘滞修饰键**（单击锁定一次组合 / 双击持续锁定）本质上就是「什么时候发修饰键的
+   down、什么时候发 up」，天然属于客户端；服务端不必知道 Ctrl 为什么按着。
+
+| 字段 | 说明 |
+| --- | --- |
+| `vk` | Win32 虚拟键码。`0`（缺省或非数字）表示「没有按键」，该帧被忽略；大于 `255` 被截断到 `255`。左右修饰键用区分码：`VK_LSHIFT(0xA0)` / `VK_RSHIFT(0xA1)` / `VK_LCONTROL(0xA2)` / `VK_RCONTROL(0xA3)` / `VK_LMENU(0xA4)` / `VK_RMENU(0xA5)` / `VK_LWIN(0x5B)` / `VK_RWIN(0x5C)` |
+| `down` | `true` = KEY_DOWN，`false` = KEY_UP。接受 JSON 布尔、`"true"`/`"false"` 字符串与 `0`/`1`；**缺省按 `false`（抬起）处理** —— 抬起一个没按下的键是无害的空操作，而缺省「按下」会在电脑上留下一个永远不松开的按键，之后用户碰真实键盘的每一次输入都会变成快捷键 |
+| `ext` | 可选。是否带 `KEYEVENTF_EXTENDEDKEY`。**缺省时由服务端按 `vk` 的标准扩展键集合判定**，客户端只在虚拟键码无法区分键位时才显式给出：小键盘回车与主回车共用 `VK_RETURN(0x0D)`，只有它需要写 `"ext":true` |
+
+**扩展键（`KEYEVENTF_EXTENDEDKEY`）**：`↑↓←→`、`Insert/Delete/Home/End/PgUp/PgDn`、
+`PrintScreen`、`NumLock`、小键盘 `/`、`右 Ctrl`、`右 Alt`、`Win`、`菜单键` 在 PS/2 协议里
+是「`0xE0` 前缀 + 扫描码」。不设这个标志时 Windows 会把扫描码解析成**小键盘上的孪生键**：
+NumLock 打开时「左箭头」会变成小键盘 `4`，「Delete」会变成小数点。服务端维护的标准集合：
+
+```
+0x21 0x22 0x23 0x24 0x25 0x26 0x27 0x28   PgUp PgDn End Home ← ↑ → ↓
+0x2C 0x2D 0x2E                            PrintScreen Insert Delete
+0x5B 0x5C 0x5D                            LWin RWin Menu
+0x6F 0x90                                小键盘 / · NumLock
+0xA3 0xA5                                右 Ctrl · 右 Alt
+```
+
+**卡键保护（服务端必须实现）**：手机端的粘滞键会把 `Ctrl/Shift/Alt/Win` **持续**按在电脑上
+（双击锁定就是为了「一只手按 Ctrl 再点一串字母」）。如果连接在锁住的状态下断掉，电脑上就会留下
+一个物理卡住的修饰键 —— 用户之后碰真实键盘时每一次输入都会变成快捷键。因此：
+
+- 服务端必须记住**自己注入过**哪些键还按着，并在**会话结束时**（socket 关闭 / 被踢 / 看门狗超时）
+  把它们全部抬起；只释放自己注入的键，绝不碰用户在实体键盘上按着的键；
+- 抬起时**必须沿用按下时用过的 `ext` 标志**，否则松开的不是同一个键；
+- 客户端在键盘不可见（切页 / 退出全屏 / 断开）时也应主动把锁定的修饰键抬起，两端都做才安全。
+
+键盘帧与鼠标帧走同一条 WebSocket、同一套认证与连接状态管理，没有单独的心跳或通道。
+服务端不做节流（与前缀一致：只夹取范围、不拒绝帧）；「按键重复」（长按连发）由手机端实现，
+所以不需要依赖 Windows 的键盘重复延迟。
+
+### 2.7 文本（`text`）
+
+手机的「键盘模式」还需要能输入**中文、日文、emoji**。这些字符在 `key` 帧里根本表达不出来：
+虚拟键码描述的是**键位**，不是**字符**，一个汉字要经过输入法、候选词、上屏才变成一个字符，
+中间那串按键对电脑端毫无意义；emoji 与 `€`、`@` 这类只有 AltGr 才打得出的字符同样没有唯一的
+键序列。所以另开一条消息，直接传字符本身：
+
+```json
+{"type":"text","s":"你好"}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `s` | 要注入的文本。**必须存在且为 JSON 字符串**，缺 `s`、`s:null`、`s` 是数字或对象时整帧被忽略（不会退化成空串，也不会去猜） |
+
+服务端把每个 UTF-16 码元变成一个 `KEYEVENTF_UNICODE` 的 `INPUT`：`wVk = 0`、
+`wScan = 码元`、`dwFlags = KEYEVENTF_UNICODE(0x0004)`，每个码元先按下再抬起，整串在**一次**
+`SendInput` 调用里发完（中途被别的注入插进来字符顺序就乱了）。这个标志让 Windows **绕开键盘
+布局**，直接把字符交给前台窗口的 `WM_CHAR`，因此：
+
+- 中文、日文、韩文不需要电脑上装任何输入法、也不需要切到某个布局；
+- emoji 这类**补充平面字符**是两个 UTF-16 码元，会被拆成两个 `INPUT`——这不是「按了某个键」，
+  只是 Windows 的 Unicode 注入单位本来就是码元；
+- 一个空格是**真实字符**，会照常注入，不是「空白所以跳过」。
+
+**截断规则（`MaxTextLength = 256`）**：按 UTF-16 码元截断到 256。如果第 256 个码元正好是**高代理
+项**（emoji 的第一个码元），就再多丢一个、只保留 255 个：它的低代理项已经被切掉了，留下的是一个
+无效的孤立高代理项，注入出去只会变成一个乱码方块。也就是说 emoji 要么完整，要么整个不出现，
+绝不会被切成半个。
+
+**没有按键状态，因此不参与卡键保护**：`text` 帧不表达「哪个键按着」，服务端不为它记账，
+`ReleaseAll()`（§2.6）也不会为它松开任何东西——每个码元都是当场按下并立刻抬起，不存在「按住的
+中间状态」。`key` 帧的卡键保护逻辑完全不受影响。
+
+**兼容性**：这是**追加帧**，协议版本仍然是 `2`。按 §2.3，旧服务端读到未知 `type` 只记一条日志
+然后忽略，连接照常存活；手机端在发之前也不需要协商能力，最坏情况就是「这次输入没发生」。
+
+**已知限制**：只认扫描码的程序收不到这段文本。用 Raw Input / DirectInput 读键盘的游戏、部分
+远程桌面与自动化工具是直接从设备栈拿扫描码的，而 `KEYEVENTF_UNICODE` 注入的是字符级的
+`WM_CHAR`、背后没有对应的物理按键，这类程序会「什么都没收到」。普通编辑框、浏览器、聊天软件、
+终端、Office 都能正常收到。
 
 ---
 
@@ -390,5 +419,8 @@ Windows 拒绝输入注入**。做法是让手机按固定频率发已知轨迹�
 - v1 客户端连 v2 服务端：因为 v1 不认 `auth_challenge`，会被 `auth_timeout`（12s）断开；
   这是有意的，不提供 v1 兼容路径。
 - 新增消息类型属于向后兼容变更：接收方忽略未知类型即可（§2.3）。
+  键盘模式的 `key`（§2.6）就是这样加进来的：旧服务端收到它会走「忽略未知指令」分支，
+  手机端的键盘区表现为「按下没反应」，但鼠标、触摸板、文件传输全部不受影响。
+  因此协议版本仍然是 `2`；如果要用键盘模式，服务端与手机端都要升级到带 §2.6 的版本。
 - 数值字段统一使用整数（除 `fileId`、`sid`、`keyId`、`fp`、`nonce`、`sign`、`pubKey` 等字符串字段）。
 - 时间统一为 Unix 秒（UTC），仅在认证阶段使用，且允许 ±120s 偏差。

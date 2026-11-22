@@ -1,7 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
-using System.Text;
 using System.Windows;
 using System.Windows.Media.Imaging;
 using AirTouch.Core;
@@ -180,7 +179,6 @@ public partial class MainWindow : Window
         server.StatusChanged += OnServerStatusChanged;
         server.FileReceived += OnFileReceived;
         server.FileSendProgressChanged += OnFileSendProgress;
-        server.DiagnosticReportReady += OnDiagnosticReportReady;
     }
 
     private void DetachServer(AirTouchServer server)
@@ -188,7 +186,6 @@ public partial class MainWindow : Window
         server.StatusChanged -= OnServerStatusChanged;
         server.FileReceived -= OnFileReceived;
         server.FileSendProgressChanged -= OnFileSendProgress;
-        server.DiagnosticReportReady -= OnDiagnosticReportReady;
     }
 
     private void DisposeServer()
@@ -285,9 +282,6 @@ public partial class MainWindow : Window
     private void OnServerStatusChanged(object? sender, ServerStatus status) =>
         Dispatcher.BeginInvoke(new Action(UpdateUi));
 
-    private void OnDiagnosticReportReady(object? sender, ServerDiagReport report) =>
-        Dispatcher.BeginInvoke(new Action(UpdateUi));
-
     private void OnFileReceived(object? sender, FileTransferResult result) =>
         Dispatcher.BeginInvoke(new Action(() =>
         {
@@ -355,15 +349,10 @@ public partial class MainWindow : Window
         TxtSid.Text = status.Sid;
         TxtPin.Text = status.CertificatePin;
         TxtCounters.Text =
-            $"移动 {status.MoveCommands} · 点击 {status.ClickCommands} · 滚轮 {status.ScrollCommands} · 复位 {status.ResetCommands} · 收 {FormatBytes(status.BytesReceived)} / 发 {FormatBytes(status.BytesSent)}";
-        TxtInject.Text = status.SendInputFailures == 0
+            $"移动 {status.MoveCommands} · 点击 {status.ClickCommands} · 滚轮 {status.ScrollCommands} · 复位 {status.ResetCommands} · 按键 {status.KeyCommands} · 文本 {status.TextCommands} · 收 {FormatBytes(status.BytesReceived)} / 发 {FormatBytes(status.BytesSent)}";
+        TxtInject.Text = status.SendInputFailures + status.KeyInputFailures == 0
             ? "0（正常）"
-            : $"{status.SendInputFailures} 次（Windows 拒绝了注入，光标会「不动」）";
-
-        if (status.LastDiagReport is not null)
-        {
-            TxtDiag.Text = FormatDiag(status.LastDiagReport);
-        }
+            : $"光标 {status.SendInputFailures} 次 / 键盘 {status.KeyInputFailures} 次（Windows 拒绝了注入，光标与按键会「不动」）";
 
         BtnToggle.Content = status.IsRunning ? "停止服务" : "启动服务";
         BtnRefreshToken.IsEnabled = status.IsRunning;
@@ -431,77 +420,6 @@ public partial class MainWindow : Window
 
     private static string Shorten(string keyId) =>
         keyId.Length <= 8 ? keyId : keyId[..8];
-
-    private static string FormatDiag(ServerDiagReport report)
-    {
-        var builder = new StringBuilder();
-        builder.AppendLine($"时间 {DateTime.Now:HH:mm:ss} · {report.TestKind}/{report.Mode} · 目标 {report.TargetHz} Hz · 计划 {report.Planned} 帧 · 耗时 {report.DurationMs} ms");
-        builder.AppendLine($"手机侧：发送 {report.ClientSent} 帧，自报用时 {report.ClientElapsedMs} ms，最大发送间隔 {report.ClientMaxSendGapMs} ms");
-        builder.AppendLine($"电脑侧：收到 {report.Received} 帧，丢失 {report.Lost}，重复 {report.Duplicated}，乱序 {report.OutOfOrder}");
-        builder.AppendLine($"到达间隔：最大 {report.MaxGapMs} ms，平均 {report.MeanGapMs} ms；SendInput 失败 {report.SendInputFailures} 次");
-        builder.AppendLine($"光标实测：更新 {report.CursorHz} Hz（{report.CursorUpdates} 次，采样 {report.CursorPollHz} Hz，最大间隔 {report.CursorMaxGapMs} ms）；屏幕刷新率 {report.DisplayHz} Hz");
-        builder.AppendLine($"光标：起点 ({report.StartX},{report.StartY}) → 终点 ({report.EndX},{report.EndY})");
-        builder.Append(Verdict(report));
-        return builder.ToString();
-    }
-
-    /// <summary>
-    /// Turns the numbers into the one sentence the user actually needs: which of the three layers
-    /// (phone / link / Windows input injection) is responsible for a stutter.
-    /// </summary>
-    /// <remarks>
-    /// The order matters. <see cref="ServerDiagReport.CursorHz"/> is checked first among the "no loss"
-    /// cases because it is the only number measured on the *visible* side: frames can arrive perfectly
-    /// and still produce few cursor updates (bursty delivery, sub-pixel slow motion, or a refresh-rate
-    /// ceiling), and that is precisely the complaint "看起来不流畅但不像丢帧".
-    /// </remarks>
-    private static string Verdict(ServerDiagReport report)
-    {
-        if (report.SendInputFailures > 0)
-        {
-            return $"结论：Windows 拒绝了 {report.SendInputFailures} 次输入注入（更高权限窗口、锁屏或桌面切换）——「光标不动」不在手机上，也不在网络上。";
-        }
-
-        if (report.ClientSent == 0)
-        {
-            return "结论：手机一帧都没发出来，问题在手机端（连接状态、线程或界面卡死）。";
-        }
-
-        if (report.Missing > Math.Max(2, report.ClientSent / 20))
-        {
-            var percent = report.ClientSent == 0 ? 0 : (double)report.Missing / report.ClientSent * 100;
-            return $"结论：手机发出但电脑没收到 {report.Missing} 帧（{percent:0.0}%），丢包发生在链路上（Wi-Fi/AP 隔离/缓冲区）。";
-        }
-
-        if (report.ClientMaxSendGapMs > 40)
-        {
-            return $"结论：手机侧出现 {report.ClientMaxSendGapMs} ms 的发送停顿（手机自报），卡顿来自手机（界面/传感器/线程），不是网络。";
-        }
-
-        if (report.MaxGapMs > 40)
-        {
-            // 手机自报的发送间隔正常、到达却成串 —— 帧是被"攒着一起发"的。
-            // 两个已知成因：① Wi-Fi 省电（PSM/DTIM 缓冲）；② Nagle + 延迟 ACK
-            // （手机侧 OkHttp 不设 TCP_NODELAY 时每 200ms 左右会出现一次这种空洞）。
-            return $"结论：手机那边发得很稳（最大发送间隔 {report.ClientMaxSendGapMs} ms），但到达间隔出现 {report.MaxGapMs} ms 的空洞" +
-                   $"（平均只有 {report.MeanGapMs} ms）——帧在链路上被攒起来一起发了，不是服务端丢帧。" +
-                   "两个已知成因：① Wi-Fi 省电/漫游扫描把帧缓冲到 DTIM 一起发（用 5GHz、关蓝牙、确认手机侧「低延迟锁已获取」）；" +
-                   "② Nagle + 延迟 ACK（本次已给手机端开启 TCP_NODELAY）。" +
-                   "若仍复现，请用 USB 网络共享复测同一测试：空洞消失即证明问题在 Wi-Fi 空口。";
-        }
-
-        // 帧全到、间隔也平稳：这时唯一还能解释"看起来不流畅"的就是光标实际更新的次数。
-        if (report.CursorSampleValid && report.CursorHz > 0 &&
-            report.CursorHz < Math.Min(report.TargetHz, report.DisplayHz > 0 ? report.DisplayHz : report.TargetHz) * 0.6)
-        {
-            var ceiling = report.DisplayHz > 0 ? Math.Min(report.TargetHz, report.DisplayHz) : report.TargetHz;
-            return $"结论：帧都到了、间隔平稳，但光标实测只更新了 {report.CursorHz} Hz（发送 {report.TargetHz} Hz，屏幕 {report.DisplayHz} Hz）。" +
-                   "这属于「每次位移不足 1 物理像素」——光标只能整像素跳，慢速移动时更新次数必然低于发送次数；" +
-                   $"把目标频率降到屏幕刷新率附近（约 {ceiling} Hz）或调高灵敏度，观感会更连续。";
-        }
-
-        return "结论：整条链路健康（无丢帧、间隔平稳、光标按帧更新）——如果你仍看到光标停顿，问题在电脑端的输入注入或前台窗口权限。";
-    }
 
     private void UpdateQrCode(ServerStatus status)
     {

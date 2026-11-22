@@ -26,10 +26,10 @@ import com.airtouch.app.settings.SettingsStore
 import kotlin.math.roundToInt
 
 /**
- * 空中鼠标页。
+ * 鼠标页（「鼠标」标签页）。
  *
  * 传感器策略：
- * - 优先 [SensorManager.TYPE_GYROSCOPE]，采样周期 10ms（约 100Hz）；
+ * - 优先 [SensorManager.TYPE_GYROSCOPE]；
  * - 只有在**标准陀螺仪完全不存在**时才降级到
  *   [SensorManager.TYPE_GYROSCOPE_UNCALIBRATED]（未校准陀螺仪，前三个值是原始角速度，
  *   后三个是零偏估计）。降级原因会在界面上明确写出来，避免用户以为功能正常但手感诡异；
@@ -37,7 +37,7 @@ import kotlin.math.roundToInt
  *
  * **回调线程（v2 的关键修复）**：传感器注册在专用的 [HandlerThread] 上，而不是主线程。
  * 旧实现用 `registerListener(listener, sensor, delay)` 注册，回调落在主线程：只要界面在
- * 做任何事（Tab 切换、状态栏刷新、Toast 动画、GC），陀螺仪事件就会被延迟甚至丢弃。
+ * 做任何事（Tab 切换、状态栏刷新、Toast 动画、GC），传感器事件就会被延迟甚至丢弃。
  * 现象正是「手机在动、光标不动，而且不是抖动而是停顿」——因为停顿发生在事件送达之前。
  * 放到独立线程后，界面卡顿不再影响输入通路。
  *
@@ -294,6 +294,7 @@ class AirMouseFragment : Fragment(), SensorEventListener {
 
     // ---------------- 传感器 ----------------
 
+    /** 解析陀螺仪：优先标准陀螺仪，完全没有时才降级到未校准陀螺仪 */
     private fun resolveSensor() {
         val ctx = context ?: return
         if (sensorManager == null) {
@@ -305,21 +306,22 @@ class AirMouseFragment : Fragment(), SensorEventListener {
             unavailableReason = R.string.airmouse_no_sensor
             return
         }
+
+        // 标准陀螺仪优先，只有它缺失时才降级到未校准陀螺仪
         val plain = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         if (plain != null) {
             gyroSensor = plain
             unavailableReason = 0
-            return
+        } else {
+            val uncalibrated = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED)
+            if (uncalibrated != null) {
+                gyroSensor = uncalibrated
+                unavailableReason = R.string.airmouse_using_uncalibrated
+            } else {
+                gyroSensor = null
+                unavailableReason = R.string.airmouse_no_sensor
+            }
         }
-        // 降级：未校准陀螺仪（只有标准陀螺仪缺失时才用）
-        val uncalibrated = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED)
-        if (uncalibrated != null) {
-            gyroSensor = uncalibrated
-            unavailableReason = R.string.airmouse_using_uncalibrated
-            return
-        }
-        gyroSensor = null
-        unavailableReason = R.string.airmouse_no_sensor
     }
 
     private fun registerSensor() {
@@ -327,7 +329,7 @@ class AirMouseFragment : Fragment(), SensorEventListener {
         val sm = sensorManager ?: return
         val sensor = gyroSensor ?: return
         try {
-            // 专用线程 + 尽量快的采样周期：主线程再忙也不会让陀螺仪事件排队
+            // 专用线程 + 尽量快的采样周期：主线程再忙也不会让传感器事件排队
             val existing = sensorThread
             val thread = existing ?: HandlerThread("airtouch-gyro").also {
                 it.start()
@@ -540,14 +542,16 @@ class AirMouseFragment : Fragment(), SensorEventListener {
 
     private fun updateSensorStatus() {
         val b = _binding ?: return
+        val reason = unavailableReason
         when {
-            unavailableReason == R.string.airmouse_no_sensor -> {
-                b.sensorStatus.setText(R.string.airmouse_no_sensor)
+            // 陀螺仪（含降级路径）都拿不到：明确说清原因，并禁用复位按钮
+            reason == R.string.airmouse_no_sensor -> {
+                b.sensorStatus.setText(reason)
                 b.sensorStatus.setTextColor(ContextCompat.getColor(requireContext(), R.color.at_error))
                 b.buttonResetFloat.isEnabled = false
             }
 
-            unavailableReason == R.string.airmouse_using_uncalibrated -> {
+            reason == R.string.airmouse_using_uncalibrated -> {
                 b.sensorStatus.setText(R.string.airmouse_using_uncalibrated)
                 b.sensorStatus.setTextColor(ContextCompat.getColor(requireContext(), R.color.at_text_dim))
                 b.buttonResetFloat.isEnabled = true
@@ -559,7 +563,7 @@ class AirMouseFragment : Fragment(), SensorEventListener {
                     // 刷新发送限速：60Hz 屏发 90 帧/秒、高刷屏最多 144 帧/秒（见 sendIntervalNs 注释）
                     updateSendInterval()
                     // 把采样率、实发帧率、发送间隔与已发送帧数显示出来：用户据此判断
-                    // 「传感器到底有没有在出货」「手机自己有没有卡」，这比「陀螺仪工作中」有用得多。
+                    // 「传感器到底有没有在出货」「手机自己有没有卡」，这比「传感器工作中」有用得多。
                     b.sensorStatus.text = if (engine.scrollMode) {
                         getString(
                             R.string.airmouse_status_scroll_rate,

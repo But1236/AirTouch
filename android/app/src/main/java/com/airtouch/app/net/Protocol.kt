@@ -16,10 +16,11 @@ object Protocol {
 
     // ---- 客户端 → 服务端 的 type 常量 ----
     const val TYPE_MOVE = "move"
-    const val TYPE_MOVE_TO = "moveto"
     const val TYPE_CLICK = "click"
     const val TYPE_SCROLL = "scroll"
     const val TYPE_RESET = "reset"
+    const val TYPE_KEY = "key"
+    const val TYPE_TEXT = "text"
     const val TYPE_FILE_HEADER = "file_header"
     const val TYPE_FILE_END = "file_end"
     const val TYPE_HELLO = "hello"
@@ -27,8 +28,6 @@ object Protocol {
 
     /** 协议 §1.2：认证三步握手 */
     const val TYPE_AUTH_REQ = "auth_req"
-    const val TYPE_DIAG_BEGIN = "diag_begin"
-    const val TYPE_DIAG_REPORT = "diag_report"
 
     // ---- 服务端 → 客户端 的 type 常量 ----
     const val TYPE_AUTH_CHALLENGE = "auth_challenge"
@@ -43,34 +42,25 @@ object Protocol {
     const val FIELD_TYPE = "type"
     const val FIELD_DX = "dx"
     const val FIELD_DY = "dy"
-    const val FIELD_X = "x"
-    const val FIELD_Y = "y"
-    const val FIELD_SEQ = "seq"
     const val FIELD_BUTTON = "button"
     const val FIELD_AMOUNT = "amount"
+    const val FIELD_VK = "vk"
+    const val FIELD_DOWN = "down"
+    const val FIELD_EXT = "ext"
+    const val FIELD_TEXT = "s"
     const val FIELD_FILE_NAME = "fileName"
     const val FIELD_FILE_SIZE = "fileSize"
     const val FIELD_FILE_ID = "fileId"
     const val FIELD_DEVICE_NAME = "deviceName"
     const val FIELD_APP_VERSION = "appVersion"
 
-    // ---- 认证与诊断字段 ----
+    // ---- 认证字段 ----
     const val FIELD_AUTH_VERSION = "auth_v"
     const val FIELD_KEY_ID = "keyId"
     const val FIELD_SIGN = "sign"
     const val FIELD_TS = "ts"
     const val FIELD_TOKEN = "token"
     const val FIELD_PUBLIC_KEY = "pubKey"
-    const val FIELD_TEST_KIND = "testKind"
-    const val FIELD_MODE = "mode"
-    const val FIELD_PLANNED = "planned"
-    const val FIELD_TARGET_HZ = "targetHz"
-    const val FIELD_CIRCLE_MS = "circleMs"
-    const val FIELD_SENT = "sent"
-    const val FIELD_FIRST_SEQ = "firstSeq"
-    const val FIELD_LAST_SEQ = "lastSeq"
-    const val FIELD_ELAPSED_MS = "elapsedMs"
-    const val FIELD_MAX_SEND_GAP_MS = "maxSendGapMs"
 
     const val BUTTON_LEFT = "left"
     const val BUTTON_RIGHT = "right"
@@ -78,11 +68,20 @@ object Protocol {
     /** 协议 §2.1：dx/dy 被服务端截断到 [-4096, 4096]，客户端主动先截断 */
     const val MOVE_LIMIT = 4096
 
-    /** 协议 §2.1：moveto 的硬上限，超出直接截断（PC 端还会再夹到主屏范围） */
-    const val ABSOLUTE_LIMIT = 32767
-
     /** 协议 §2.1：amount 截断到 [-120, 120] */
     const val SCROLL_LIMIT = 120
+
+    /** 协议 §2.6：vk 是 Win32 虚拟键码，0 表示「没有按键」，超过 255 被截断 */
+    const val MAX_VIRTUAL_KEY = 255
+
+    /** 协议 §2.7：一个 `text` 帧最多 256 个 UTF-16 码元，超出截断 */
+    const val MAX_TEXT_LENGTH = 256
+
+    /**
+     * 长文本分片长度（协议 §2.7）：中文一句话就几十个字，一次发一整段会让服务端的单次注入
+     * 调用处理太多字符；分片后每帧都很小，也更容易在丢包时定位。
+     */
+    const val TEXT_CHUNK_LENGTH = 120
 
     /** 协议 §3.2：分块大小 64 KiB */
     const val CHUNK_SIZE = 65536
@@ -127,31 +126,13 @@ object Protocol {
     fun normalizeButton(button: String?): String =
         if (button != null && button.equals(BUTTON_RIGHT, ignoreCase = true)) BUTTON_RIGHT else BUTTON_LEFT
 
-    fun buildMove(dx: Number?, dy: Number?, seq: Int? = null): String {
+    fun buildMove(dx: Number?, dy: Number?): String {
         val x = clamp(safeInt(dx), -MOVE_LIMIT, MOVE_LIMIT)
         val y = clamp(safeInt(dy), -MOVE_LIMIT, MOVE_LIMIT)
         val o = JSONObject()
         o.put(FIELD_TYPE, TYPE_MOVE)
         o.put(FIELD_DX, x)
         o.put(FIELD_DY, y)
-        if (seq != null) o.put(FIELD_SEQ, seq)
-        return o.toString()
-    }
-
-    /**
-     * 绝对定位（协议 §2.1 的 `moveto`）。
-     *
-     * 与 `move` 的区别是 PC 端用 SetCursorPos 直接落到坐标上：**不经过 Windows 的指针加速曲线**，
-     * 所以「画圆测试」能得到和手机算出来的完全一致的轨迹；相对位移在累加之后会被加速曲线拉偏。
-     */
-    fun buildMoveTo(x: Number?, y: Number?, seq: Int? = null): String {
-        val px = clamp(safeInt(x), -ABSOLUTE_LIMIT, ABSOLUTE_LIMIT)
-        val py = clamp(safeInt(y), -ABSOLUTE_LIMIT, ABSOLUTE_LIMIT)
-        val o = JSONObject()
-        o.put(FIELD_TYPE, TYPE_MOVE_TO)
-        o.put(FIELD_X, px)
-        o.put(FIELD_Y, py)
-        if (seq != null) o.put(FIELD_SEQ, seq)
         return o.toString()
     }
 
@@ -185,46 +166,6 @@ object Protocol {
         return o.toString()
     }
 
-    /** 通信测试开始（协议 §2.4）。 */
-    fun buildDiagBegin(testKind: String, mode: String, planned: Int, targetHz: Int, circleMs: Int): String {
-        val o = JSONObject()
-        o.put(FIELD_TYPE, TYPE_DIAG_BEGIN)
-        o.put(FIELD_TEST_KIND, testKind)
-        o.put(FIELD_MODE, mode)
-        o.put(FIELD_PLANNED, planned)
-        o.put(FIELD_TARGET_HZ, targetHz)
-        o.put(FIELD_CIRCLE_MS, circleMs)
-        return o.toString()
-    }
-
-    /** 通信测试结束，把手机侧的自测数据交回 PC（协议 §2.4）。 */
-    fun buildDiagReport(
-        testKind: String,
-        mode: String,
-        sent: Int,
-        planned: Int,
-        firstSeq: Int,
-        lastSeq: Int,
-        elapsedMs: Long,
-        targetHz: Int,
-        circleMs: Int,
-        maxSendGapMs: Int
-    ): String {
-        val o = JSONObject()
-        o.put(FIELD_TYPE, TYPE_DIAG_REPORT)
-        o.put(FIELD_TEST_KIND, testKind)
-        o.put(FIELD_MODE, mode)
-        o.put(FIELD_SENT, sent)
-        o.put(FIELD_PLANNED, planned)
-        o.put(FIELD_FIRST_SEQ, firstSeq)
-        o.put(FIELD_LAST_SEQ, lastSeq)
-        o.put(FIELD_ELAPSED_MS, elapsedMs)
-        o.put(FIELD_TARGET_HZ, targetHz)
-        o.put(FIELD_CIRCLE_MS, circleMs)
-        o.put(FIELD_MAX_SEND_GAP_MS, maxSendGapMs)
-        return o.toString()
-    }
-
     fun buildClick(button: String?): String {
         val o = JSONObject()
         o.put(FIELD_TYPE, TYPE_CLICK)
@@ -244,6 +185,63 @@ object Protocol {
         val o = JSONObject()
         o.put(FIELD_TYPE, TYPE_RESET)
         return o.toString()
+    }
+
+    /**
+     * 键盘按键的一次**状态变化**（协议 §2.6）。
+     *
+     * 一次 `Ctrl+C` 就是四次调用（Ctrl 按下 / C 按下 / C 抬起 / Ctrl 抬起），和真实键盘产生的事件
+     * 序列一致。之所以不定义「组合键」消息：长按与粘滞锁定都要求把「按下」和「抬起」放在两个不同
+     * 的时刻发出（例如「C 抬起之后 Ctrl 还按着」），组合消息表达不了这种状态。
+     *
+     * @param vk Win32 虚拟键码，截断到 `[0, 255]`；`0` 会被服务端忽略
+     * @param down true = KEY_DOWN，false = KEY_UP
+     * @param extended 显式指定 `KEYEVENTF_EXTENDEDKEY`。**默认 null，由服务端按 vk 的标准扩展键
+     *   集合推断**（方向键、Delete、PrintScreen、右 Ctrl、Win、小键盘 `/` 等）；只有虚拟键码无法
+     *   区分的键位才需要显式给出——小键盘回车与主回车共用 `VK_RETURN(0x0D)`。
+     */
+    fun buildKey(vk: Int, down: Boolean, extended: Boolean? = null): String {
+        val o = JSONObject()
+        o.put(FIELD_TYPE, TYPE_KEY)
+        o.put(FIELD_VK, clamp(vk, 0, MAX_VIRTUAL_KEY))
+        o.put(FIELD_DOWN, down)
+        if (extended != null) o.put(FIELD_EXT, extended)
+        return o.toString()
+    }
+
+    /**
+     * 一段 Unicode 文本（协议 §2.7）。
+     *
+     * 键盘上打出来的中文、九键选中的候选字、以及「纯文本输入框」里的一整段话，都走这一帧。
+     * 它和 `key` 帧的分工是明确的：**能用虚拟键码表达的用 `key`，不能的用 `text`**。
+     * 中文没法用虚拟键码表达（那不是某个键位），所以只能按 Unicode 码元直接注入。
+     *
+     * 与 `key` 不同，这一帧不携带按键状态，因此不参与协议 §2.6 的卡键保护。
+     *
+     * @return 编码后的帧；[text] 为空时返回 null（调用方跳过，不要发一个空帧）
+     */
+    fun buildText(text: String?): String? {
+        if (text.isNullOrEmpty()) return null
+        val safe = truncateText(text, MAX_TEXT_LENGTH)
+        if (safe.isEmpty()) return null
+        val o = JSONObject()
+        o.put(FIELD_TYPE, TYPE_TEXT)
+        o.put(FIELD_TEXT, safe)
+        return o.toString()
+    }
+
+    /**
+     * 按 UTF-16 码元截断到 [limit]，且**绝不切开一个代理对**。
+     *
+     * 切在代理对中间会留下一个孤立的高代理（半个 emoji），服务端注入的就是一个乱码字符；
+     * 少一个字比多一个乱码好。
+     */
+    fun truncateText(text: String, limit: Int): String {
+        if (limit <= 0) return ""
+        if (text.length <= limit) return text
+        var end = limit
+        if (Character.isHighSurrogate(text[end - 1])) end -= 1
+        return text.substring(0, end)
     }
 
     fun buildFileHeader(name: String?, size: Number?): String {

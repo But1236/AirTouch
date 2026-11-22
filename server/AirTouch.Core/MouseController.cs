@@ -16,9 +16,6 @@ public interface IMouseController
 {
     void Move(int dx, int dy);
 
-    /// <summary>Absolute move inside the primary screen (used by <c>moveto</c> and the circle test).</summary>
-    void MoveTo(int x, int y);
-
     void Click(MouseButton button);
     void Scroll(int amount);
     void ResetToCenter();
@@ -98,31 +95,6 @@ public sealed class Win32MouseController : IMouseController
         };
 
         Send(inputs, "move");
-        Interlocked.Increment(ref _moveCount);
-    }
-
-    /// <summary>
-    /// Absolute positioning through <c>SetCursorPos</c>. Note that this deliberately bypasses the
-    /// relative-move path: Windows applies pointer ballistics ("enhance pointer precision") to
-    /// <c>SendInput</c> relative moves, so a summing-up of relative deltas does not trace the shape a
-    /// client asked for. Absolute targets are exact, which is what the communication test needs.
-    /// </summary>
-    public void MoveTo(int x, int y)
-    {
-        var (width, height) = ScreenInfo.PrimaryScreenSize();
-        if (width > 0 && height > 0)
-        {
-            x = Math.Clamp(x, 0, width - 1);
-            y = Math.Clamp(y, 0, height - 1);
-        }
-
-        if (!SetCursorPos(x, y))
-        {
-            var error = Marshal.GetLastWin32Error();
-            Interlocked.Increment(ref _sendInputFailures);
-            _log.Error($"SetCursorPos({x},{y}) 失败，错误码 {error}");
-        }
-
         Interlocked.Increment(ref _moveCount);
     }
 
@@ -295,16 +267,6 @@ public sealed class RecordingMouseController : IMouseController
             _x += dx;
             _y += dy;
             _events.Add($"move {dx} {dy}");
-        }
-    }
-
-    public void MoveTo(int x, int y)
-    {
-        lock (_events)
-        {
-            _x = x;
-            _y = y;
-            _events.Add($"moveto {x} {y}");
         }
     }
 

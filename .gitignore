@@ -29,6 +29,10 @@ airtouch-server.pfx.secret
 
 # ---- android ----
 android/.gradle/
+# Gradle 的用户主目录被搬进工作区（GRADLE_USER_HOME）：沙箱不允许它在
+# C:\Users\<用户>\.gradle 下解压原生库（native-platform.dll）并创建锁文件。
+# 真实的依赖缓存仍指向原位置（GRADLE_RO_DEP_CACHE，只读），所以这里只有本地状态。
+.gradle-home/
 android/local.properties
 android/app/release/
 android/app/debug/
@@ -40,6 +44,12 @@ android/captures/
 *.aab
 *.jks
 *.keystore
+
+# ---- 九宫格拼音词典的上游语料 ----
+# tools/pinyin-source/ 里是 pinyin-data（读音）、jieba（字频/词频）等多兆字节原始语料，
+# 只由 tools/build-pinyin-dict.mjs 在生成词典时下载，不进仓库；生成出来的紧凑产物
+# android/app/src/main/assets/pinyin_dict.txt 是提交的，所以构建和运行期都不需要联网。
+tools/pinyin-source/
 
 # ---- misc ----
 *.swp

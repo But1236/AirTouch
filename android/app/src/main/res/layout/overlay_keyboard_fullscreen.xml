@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  横屏全屏键盘覆盖层。
+
+  它是 ControlActivity 根布局上的一个覆盖层（不是新 Activity，也不是 Dialog）：WebSocket 由
+  ControlActivity 持有，换 Activity 会让连接与键盘的按键状态一起重建，而「全屏打字」本来就应该
+  是同一个会话里的一个形态。
+
+  结构：
+    overlay_root                 整屏遮罩，消费所有落在键盘之外的触摸（防穿透）
+      keyboard_container         可整体拖动（标题条 / 四周边框都能拖）
+        LinearLayout（竖排）
+          mini_touchpad_bubble     微型触控板气泡，右对齐、就在手形图标正上方
+          keyboard_header          取消全屏 + 拖动提示 + 文本 + 手形图标
+          keyboard_view_fullscreen 完整 104 键
+
+  气泡为什么是**竖排里的正常子 View**（而不是靠 translationY 抬到容器上方）：
+  「打开气泡」于是等于「容器自己向上长高」，不需要 clipChildren=false、也不依赖容器当前在屏幕
+  上的位置 —— 旧写法把气泡抬到容器外面，容器越靠屏幕上方被裁掉得越多，最后表现为「点了手形
+  图标什么都没出现」。现在气泡的位置由布局系统保证，不可能跑到屏幕外。
+-->
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/fullscreen_overlay_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/at_fullscreen_scrim"
+    android:clickable="true"
+    android:focusable="true">
+
+    <com.airtouch.app.input.DraggableKeyboardContainer
+        android:id="@+id/keyboard_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:padding="@dimen/at_space_xs">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <!--
+              悬浮微型触控板气泡。右对齐，正好落在手形图标的上方。
+              手势识别直接复用 TouchpadView：单指移动光标、轻点左键、双指轻点右键，一行新逻辑都不用写。
+            -->
+            <FrameLayout
+                android:id="@+id/mini_touchpad_bubble"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end"
+                android:layout_marginBottom="@dimen/at_space_s"
+                android:background="@drawable/bg_at_card"
+                android:elevation="8dp"
+                android:padding="@dimen/at_space_xs"
+                android:visibility="gone"
+                tools:visibility="visible">
+
+                <com.airtouch.app.input.TouchpadView
+                    android:id="@+id/mini_touchpad_view"
+                    android:layout_width="@dimen/at_mini_touchpad_width"
+                    android:layout_height="@dimen/at_mini_touchpad_height" />
+            </FrameLayout>
+
+            <!-- 标题条：既放按钮，自己也是拖动手柄 -->
+            <LinearLayout
+                android:id="@+id/keyboard_header"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/at_keyboard_header_height"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/button_exit_fullscreen"
+                    style="@style/Widget.AirTouch.KeyBarButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="@dimen/at_keybar_button_exit_width"
+                    android:text="@string/keyboard_btn_exit_fullscreen" />
+
+                <TextView
+                    android:id="@+id/keyboard_drag_hint"
+                    style="@style/Widget.AirTouch.Label"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="@dimen/at_space_m"
+                    android:layout_weight="1"
+                    android:text="@string/keyboard_drag_hint" />
+
+                <!-- 大段文字的补充通道（弹窗里可以用系统输入法） -->
+                <Button
+                    android:id="@+id/button_text_sender"
+                    style="@style/Widget.AirTouch.KeyBarButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="@dimen/at_space_s"
+                    android:minWidth="@dimen/at_keybar_button_text_width"
+                    android:text="@string/keyboard_btn_text" />
+
+                <com.airtouch.app.input.HandIconView
+                    android:id="@+id/button_mini_touchpad"
+                    android:layout_width="@dimen/at_hand_icon_size"
+                    android:layout_height="@dimen/at_hand_icon_size"
+                    android:background="@drawable/bg_at_button"
+                    android:contentDescription="@string/keyboard_mini_touchpad" />
+            </LinearLayout>
+
+            <com.airtouch.app.input.KeyboardView
+                android:id="@+id/keyboard_view_fullscreen"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_at_card"
+                android:padding="@dimen/at_space_xs" />
+        </LinearLayout>
+    </com.airtouch.app.input.DraggableKeyboardContainer>
+</FrameLayout>

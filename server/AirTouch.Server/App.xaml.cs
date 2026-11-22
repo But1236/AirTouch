@@ -109,8 +109,6 @@ public partial class App : Application
                 certificatePin = status.CertificatePin,
                 sid = status.Sid,
                 protocolVersion = Protocol.Version,
-                screenWidth = status.ScreenWidth,
-                screenHeight = status.ScreenHeight,
                 trustedDeviceCount = status.TrustedDevices.Count,
                 downloadDirectory = status.DownloadDirectory,
                 qrBytes = window.LastQrPngLength,

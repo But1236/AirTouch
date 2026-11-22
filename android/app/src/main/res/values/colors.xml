@@ -13,4 +13,22 @@
     <color name="at_grid_line">#22FFFFFF</color>
     <color name="at_ripple">#33FFFFFF</color>
     <color name="at_button_stroke">#FF3A424E</color>
+
+    <!--
+      键盘模式配色。自绘键盘用「底色 + 强调色」表达三种状态，刻意分成三档而不是两档：
+        at_key_bg           普通键
+        at_key_bg_modifier  修饰键/动作键（比普通键更暗，让最下面一排一眼可辨）
+        at_key_bg_armed     单次锁定（单击 Ctrl）：中等强调色
+        at_key_bg_locked    持续锁定（双击 Ctrl）：满强调色 + 绿色下划线
+      单次与持续必须能区分开，否则用户分不清「按一下 C 就结束」还是「一直锁着」。
+    -->
+    <color name="at_key_bg">#FF2A313B</color>
+    <color name="at_key_bg_modifier">#FF1D222A</color>
+    <color name="at_key_bg_pressed">#FF4C8DFF</color>
+    <color name="at_key_bg_armed">#FF2E5B9E</color>
+    <color name="at_key_bg_locked">#FF4C8DFF</color>
+
+    <!-- 全屏键盘背后的遮罩：让键盘与「取消全屏」按钮从被覆盖的界面里跳出来 -->
+    <color name="at_fullscreen_scrim">#E6000000</color>
+    <color name="at_bubble_stroke">#FF4C8DFF</color>
 </resources>

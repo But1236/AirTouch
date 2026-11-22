@@ -64,10 +64,7 @@
             android:textColor="@color/at_text" />
     </LinearLayout>
 
-    <!--
-      当前模式行：明确写清「移动光标」还是「滚轮」。
-      滚轮模式下陀螺仪不再移动光标，如果没有这一行，用户会以为空中鼠标坏了。
-    -->
+    <!-- 当前模式行：明确写清是「移动光标」还是「滚轮」 -->
     <TextView
         android:id="@+id/sensor_mode"
         style="@style/Widget.AirTouch.Label"

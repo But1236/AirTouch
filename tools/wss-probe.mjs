@@ -135,7 +135,7 @@ async function authenticate(client, options = {}) {
     sign: b64url(signature),
     ts,
     deviceName: 'node-probe',
-    appVersion: '2.0.0',
+    appVersion: '2.0.2',
   };
   if (token !== undefined) {
     request.token = token;

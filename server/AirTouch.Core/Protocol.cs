@@ -6,32 +6,18 @@ public enum MessageKind
 {
     Unknown = 0,
     Move,
-    MoveTo,
     Click,
     Scroll,
     Reset,
+    Key,
+    Text,
     FileHeader,
     FileEnd,
     Hello,
     Ping,
     Pong,
     AuthReq,
-    DiagBegin,
-    DiagReport,
 }
-
-/// <summary>The client's own measurement of one communication test run (docs/PROTOCOL.md §2.3).</summary>
-public sealed record ClientDiagReport(
-    string TestKind,
-    string Mode,
-    int Planned,
-    int Sent,
-    int FirstSeq,
-    int LastSeq,
-    long ElapsedMs,
-    int TargetHz,
-    int CircleMs,
-    int MaxSendGapMs);
 
 /// <summary>A decoded control frame. Unknown frames decode to <see cref="MessageKind.Unknown"/>.</summary>
 public sealed class ControlMessage
@@ -44,17 +30,28 @@ public sealed class ControlMessage
 
     public int Dy { get; init; }
 
-    /// <summary>Absolute target of a <c>moveto</c> frame (primary screen pixels).</summary>
-    public int X { get; init; }
-
-    public int Y { get; init; }
-
     public int Amount { get; init; }
 
-    /// <summary>Optional diagnostic sequence number carried by <c>move</c>/<c>moveto</c> frames.</summary>
-    public int? Seq { get; init; }
-
     public MouseButton Button { get; init; } = MouseButton.Left;
+
+    // ---- key (docs/PROTOCOL.md §2.6) ----
+
+    /// <summary>Win32 virtual-key code of a <c>key</c> frame, clamped to <see cref="Protocol.MaxVirtualKey"/>.</summary>
+    public int VirtualKey { get; init; }
+
+    /// <summary><c>true</c> = KEY_DOWN, <c>false</c> = KEY_UP.</summary>
+    public bool KeyDown { get; init; }
+
+    /// <summary>
+    /// Explicit <c>KEYEVENTF_EXTENDEDKEY</c> override; <c>null</c> means "let the controller decide from
+    /// the virtual-key code". Only the frame author can know that the numeric keypad's Enter is meant.
+    /// </summary>
+    public bool? KeyExtended { get; init; }
+
+    // ---- text (docs/PROTOCOL.md §2.7) ----
+
+    /// <summary>Text of a <c>text</c> frame, truncated to <see cref="Protocol.MaxTextLength"/> code units.</summary>
+    public string Text { get; init; } = string.Empty;
 
     public string? FileName { get; init; }
 
@@ -79,10 +76,6 @@ public sealed class ControlMessage
     public string? Signature { get; init; }
 
     public long Timestamp { get; init; }
-
-    // ---- diag_begin / diag_report ----
-
-    public ClientDiagReport? Diag { get; init; }
 }
 
 /// <summary>
@@ -101,8 +94,14 @@ public static class Protocol
 
     public const int MaxScrollAmount = 120;
 
-    /// <summary>Hard cap on the absolute target of a <c>moveto</c>; anything larger is clamped.</summary>
-    public const int MaxAbsoluteCoordinate = 32767;
+    /// <summary>Highest Win32 virtual-key code; anything larger is not a virtual key and is clamped away.</summary>
+    public const int MaxVirtualKey = 255;
+
+    /// <summary>
+    /// Longest text a <c>text</c> frame may inject, in UTF-16 code units; the rest is truncated away
+    /// (docs/PROTOCOL.md §2.7). A single frame is a burst of input, not a bulk transfer.
+    /// </summary>
+    public const int MaxTextLength = 256;
 
     /// <summary>
     /// Builds the pairing URL that goes into the QR code. <paramref name="sid"/> and
@@ -169,19 +168,6 @@ public static class Protocol
                     RawType = type,
                     Dx = Math.Clamp(GetInt(root, "dx"), -MaxMoveStep, MaxMoveStep),
                     Dy = Math.Clamp(GetInt(root, "dy"), -MaxMoveStep, MaxMoveStep),
-                    Seq = GetOptionalInt(root, "seq"),
-                };
-            }
-
-            if (type.Equals("moveto", StringComparison.OrdinalIgnoreCase))
-            {
-                return new ControlMessage
-                {
-                    Kind = MessageKind.MoveTo,
-                    RawType = type,
-                    X = Math.Clamp(GetInt(root, "x"), -MaxAbsoluteCoordinate, MaxAbsoluteCoordinate),
-                    Y = Math.Clamp(GetInt(root, "y"), -MaxAbsoluteCoordinate, MaxAbsoluteCoordinate),
-                    Seq = GetOptionalInt(root, "seq"),
                 };
             }
 
@@ -211,6 +197,38 @@ public static class Protocol
             if (type.Equals("reset", StringComparison.OrdinalIgnoreCase))
             {
                 return new ControlMessage { Kind = MessageKind.Reset, RawType = type };
+            }
+
+            if (type.Equals("key", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ControlMessage
+                {
+                    Kind = MessageKind.Key,
+                    RawType = type,
+                    VirtualKey = Math.Clamp(GetInt(root, "vk"), 0, MaxVirtualKey),
+                    // 缺省为「抬起」而不是「按下」：抬起一个没按下的键是无害的空操作，而缺省按下
+                    // 会在电脑上留下一个永远不松开的按键（每个后续输入都变成快捷键）。
+                    KeyDown = GetBool(root, "down", fallback: false),
+                    KeyExtended = GetOptionalBool(root, "ext"),
+                };
+            }
+
+            if (type.Equals("text", StringComparison.OrdinalIgnoreCase))
+            {
+                // s 必须是真字符串：缺字段、null 或给成数字都不算「要输入的文本」。这里不退回空串而
+                // 是整帧忽略，是因为「手机发错了一个字段」与「手机想输入空文本」是两回事，静默按后者
+                // 处理只会让客户端的一个拼写错误看起来像注入成功。
+                if (!root.TryGetProperty("s", out var textElement) || textElement.ValueKind != JsonValueKind.String)
+                {
+                    return null;
+                }
+
+                return new ControlMessage
+                {
+                    Kind = MessageKind.Text,
+                    RawType = type,
+                    Text = ClampText(textElement.GetString()),
+                };
             }
 
             if (type.Equals("file_header", StringComparison.OrdinalIgnoreCase))
@@ -273,42 +291,37 @@ public static class Protocol
                 };
             }
 
-            if (type.Equals("diag_begin", StringComparison.OrdinalIgnoreCase))
-            {
-                return new ControlMessage
-                {
-                    Kind = MessageKind.DiagBegin,
-                    RawType = type,
-                    Diag = ReadDiag(root),
-                };
-            }
-
-            if (type.Equals("diag_report", StringComparison.OrdinalIgnoreCase))
-            {
-                return new ControlMessage
-                {
-                    Kind = MessageKind.DiagReport,
-                    RawType = type,
-                    Diag = ReadDiag(root),
-                };
-            }
-
             return new ControlMessage { Kind = MessageKind.Unknown, RawType = type };
         }
     }
 
-    private static ClientDiagReport ReadDiag(JsonElement root) =>
-        new(
-            TestKind: GetString(root, "testKind") ?? "circle",
-            Mode: GetString(root, "mode") ?? "abs",
-            Planned: GetInt(root, "planned"),
-            Sent: GetInt(root, "sent"),
-            FirstSeq: GetInt(root, "firstSeq"),
-            LastSeq: GetInt(root, "lastSeq"),
-            ElapsedMs: GetLong(root, "elapsedMs"),
-            TargetHz: GetInt(root, "targetHz"),
-            CircleMs: GetInt(root, "circleMs"),
-            MaxSendGapMs: GetInt(root, "maxSendGapMs"));
+    /// <summary>
+    /// Truncates a <c>text</c> payload to <see cref="MaxTextLength"/> UTF-16 code units, never leaving a
+    /// high surrogate without its low half (docs/PROTOCOL.md §2.7).
+    /// </summary>
+    private static string ClampText(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return string.Empty;
+        }
+
+        if (text.Length <= MaxTextLength)
+        {
+            return text;
+        }
+
+        var length = MaxTextLength;
+
+        // 第 256 个码元正好是高代理项时（emoji 这类补充平面字符的第一个码元）再多丢一个：它的低
+        // 代理项会被切掉，留下的是一个无效的孤立高代理项，注入到前台窗口只会变成一个乱码方块。
+        if (char.IsHighSurrogate(text[length - 1]))
+        {
+            length--;
+        }
+
+        return text[..length];
+    }
 
     /// <summary>Server → client: the single-use nonce the client must sign (docs/PROTOCOL.md §1.2).</summary>
     public static string BuildAuthChallenge(string sid, string nonce, long serverTime, int expiresInSeconds, string mode) =>
@@ -326,89 +339,20 @@ public static class Protocol
     public static string BuildWelcome(
         string serverVersion,
         string serverAddress,
-        int port,
         string sid,
-        long maxFileSize,
-        int chunkSize,
-        int screenWidth,
-        int screenHeight,
         int displayHz,
-        string? deviceName,
         string? keyId,
-        string authMode,
-        int trustedDeviceCount) =>
+        string authMode) =>
         Serialize(new Dictionary<string, object?>
         {
             ["type"] = "welcome",
             ["protocolVersion"] = Version,
             ["serverVersion"] = serverVersion,
             ["serverIp"] = serverAddress,
-            ["port"] = port,
             ["sid"] = sid,
-            ["maxFileSize"] = maxFileSize,
-            ["chunkSize"] = chunkSize,
-            ["screenWidth"] = screenWidth,
-            ["screenHeight"] = screenHeight,
             ["displayHz"] = displayHz,
-            ["deviceName"] = deviceName,
             ["keyId"] = keyId,
             ["authMode"] = authMode,
-            ["trustedCount"] = trustedDeviceCount,
-        });
-
-    /// <summary>Server → client: what the PC measured during a communication test.</summary>
-    public static string BuildDiagReport(
-        string testKind,
-        string mode,
-        int planned,
-        int received,
-        int firstSeq,
-        int lastSeq,
-        int lost,
-        int duplicated,
-        int outOfOrder,
-        int maxGapMs,
-        int meanGapMs,
-        long durationMs,
-        int sendInputFailures,
-        int startX,
-        int startY,
-        int endX,
-        int endY,
-        int screenWidth,
-        int screenHeight,
-        int cursorUpdates,
-        int cursorPollHz,
-        int cursorMaxGapMs,
-        int displayHz) =>
-        Serialize(new Dictionary<string, object?>
-        {
-            ["type"] = "diag_report",
-            ["testKind"] = testKind,
-            ["mode"] = mode,
-            ["planned"] = planned,
-            ["received"] = received,
-            ["firstSeq"] = firstSeq,
-            ["lastSeq"] = lastSeq,
-            ["lost"] = lost,
-            ["duplicated"] = duplicated,
-            ["outOfOrder"] = outOfOrder,
-            ["maxGapMs"] = maxGapMs,
-            ["meanGapMs"] = meanGapMs,
-            ["durationMs"] = durationMs,
-            ["sendInputFailures"] = sendInputFailures,
-            ["startX"] = startX,
-            ["startY"] = startY,
-            ["endX"] = endX,
-            ["endY"] = endY,
-            ["screenWidth"] = screenWidth,
-            ["screenHeight"] = screenHeight,
-            // 光标在测试期间"真正动了几次"（GetCursorPos 采样），以及屏幕刷新率。
-            // targetHz 与 received 都是"发送/到达"侧的数字，只有这两个是"看得见"侧的数字。
-            ["cursorUpdates"] = cursorUpdates,
-            ["cursorPollHz"] = cursorPollHz,
-            ["cursorMaxGapMs"] = cursorMaxGapMs,
-            ["displayHz"] = displayHz,
         });
 
     public static string BuildFileHeader(string fileName, long fileSize, string fileId) =>
@@ -524,7 +468,47 @@ public static class Protocol
         };
     }
 
-    /// <summary>Like <see cref="GetInt"/> but keeps "field absent" distinguishable from an explicit 0.</summary>
-    private static int? GetOptionalInt(JsonElement root, string name) =>
-        root.TryGetProperty(name, out _) ? GetInt(root, name) : null;
+    /// <summary>
+    /// Reads a boolean field. JSON <c>true</c>/<c>false</c>, the strings <c>"true"</c>/<c>"false"</c> and
+    /// numbers (0 = false, anything else = true) are all accepted; anything else yields
+    /// <paramref name="fallback"/> (protocol §2.3: unparsable values never reject a frame).
+    /// </summary>
+    private static bool GetBool(JsonElement root, string name, bool fallback)
+    {
+        if (!root.TryGetProperty(name, out var element))
+        {
+            return fallback;
+        }
+
+        return element.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Number => GetInt(root, name) != 0,
+            JsonValueKind.String => ParseBoolText(element.GetString()),
+            _ => fallback,
+        };
+    }
+
+    /// <summary>Like <see cref="GetBool"/> but keeps "field absent" distinguishable from an explicit false.</summary>
+    private static bool? GetOptionalBool(JsonElement root, string name) =>
+        root.TryGetProperty(name, out _) ? GetBool(root, name, fallback: false) : null;
+
+    private static bool ParseBoolText(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        if (text.Equals("true", StringComparison.OrdinalIgnoreCase) || text == "1")
+        {
+            return true;
+        }
+
+        return !text.Equals("false", StringComparison.OrdinalIgnoreCase)
+            && text != "0"
+            && double.TryParse(text, out var number)
+            && number != 0;
+    }
 }

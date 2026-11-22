@@ -67,17 +67,20 @@ class SettingsStore(context: Context) {
     /**
      * 触摸板的滚轮模式：开启后触摸板单指上下滑动 = 滚轮，而不是移动光标。
      *
-     * 注意这是**触摸板自己的**开关。空中鼠标页有独立的 [airMouseScrollMode]，
-     * 两者互不影响 —— 早期版本共用一个开关，导致在「空中鼠标」页按下滚轮模式会把触摸板
+     * 注意这是**触摸板自己的**开关。鼠标页有独立的 [airMouseScrollMode]，
+     * 两者互不影响 —— 早期版本共用一个开关，导致在「鼠标」页按下滚轮模式会把触摸板
      * 静默切成滚轮模式，回到触摸板页发现「怎么拖都不动光标」，看起来像功能坏了。
      */
     var scrollMode: Boolean
         get() = prefs.getBoolean(KEY_SCROLL_MODE, false)
         set(value) = prefs.edit().putBoolean(KEY_SCROLL_MODE, value).apply()
 
-    // ---------------- 空中鼠标 ----------------
+    // ---------------- 鼠标页 ----------------
+    //
+    // 内部命名沿用 airMouse*（历史原因）：SharedPreferences 的 key 一旦改名就等于丢掉用户设置，
+    // 所以只改界面上显示的名字，不动 key 与属性名。
 
-    /** 空中鼠标灵敏度倍数，范围 [0.1, 10.0]，默认 1.0 */
+    /** 鼠标灵敏度倍数，范围 [0.1, 10.0]，默认 1.0 */
     var airMouseSensitivity: Float
         get() = clamp(prefs.getFloat(KEY_AIRMOUSE_SENS, 1.0f), MIN_AIRMOUSE_SENS, MAX_AIRMOUSE_SENS)
         set(value) = prefs.edit()
@@ -114,29 +117,41 @@ class SettingsStore(context: Context) {
             .apply()
 
     /**
-     * 空中鼠标的滚轮模式：开启后**上下俯仰手机** = 滚轮（上下滚动），不再移动光标。
+     * 鼠标的滚轮模式：开启后**上下俯仰手机** = 滚轮（上下滚动），不再移动光标。
      * 与触摸板的 [scrollMode] 相互独立。
      */
     var airMouseScrollMode: Boolean
         get() = prefs.getBoolean(KEY_AIRMOUSE_SCROLL, false)
         set(value) = prefs.edit().putBoolean(KEY_AIRMOUSE_SCROLL, value).apply()
 
-    // ---------------- 通信测试 ----------------
+    // ---------------- 键盘模式 ----------------
 
-    /** 画圆测试的目标频率（Hz），默认 100 */
-    var diagTargetHz: Int
-        get() = prefs.getInt(KEY_DIAG_HZ, DEFAULT_DIAG_HZ)
-        set(value) = prefs.edit().putInt(KEY_DIAG_HZ, value.coerceIn(30, 240)).apply()
+    /**
+     * 竖屏键盘当前的布局 id（见 [com.airtouch.app.input.keyboard.KeyboardLayouts]）。
+     * 全屏（横屏）模式固定使用完整 104 键布局，与这个值无关。
+     */
+    var keyboardLayout: String
+        get() = prefs.getString(KEY_KEYBOARD_LAYOUT, DEFAULT_KEYBOARD_LAYOUT) ?: DEFAULT_KEYBOARD_LAYOUT
+        set(value) = prefs.edit().putString(KEY_KEYBOARD_LAYOUT, value).apply()
 
-    /** 画圆测试每圈耗时（毫秒），默认 2400 */
-    var diagCircleMs: Int
-        get() = prefs.getInt(KEY_DIAG_CIRCLE_MS, DEFAULT_DIAG_CIRCLE_MS)
-        set(value) = prefs.edit().putInt(KEY_DIAG_CIRCLE_MS, value.coerceIn(600, 10000)).apply()
+    /**
+     * 全屏键盘相对「水平居中、贴底」默认位置的手动偏移（dp）。
+     *
+     * 用 dp 而不是像素存：同一台设备旋转后密度不变但尺寸变了，px 会让偏移量失去意义；
+     * 而且 dp 让「手掌大小的微调」在不同手机上可复现。恢复时会重新夹到屏幕范围内。
+     */
+    var keyboardOffsetXDp: Float
+        get() = clampOffset(prefs.getFloat(KEY_KEYBOARD_OFFSET_X, 0f))
+        set(value) = prefs.edit().putFloat(KEY_KEYBOARD_OFFSET_X, clampOffset(value)).apply()
 
-    /** 画圆测试是否使用绝对定位（moveto）；关闭则用相对位移（move） */
-    var diagUseAbsolute: Boolean
-        get() = prefs.getBoolean(KEY_DIAG_ABS, true)
-        set(value) = prefs.edit().putBoolean(KEY_DIAG_ABS, value).apply()
+    var keyboardOffsetYDp: Float
+        get() = clampOffset(prefs.getFloat(KEY_KEYBOARD_OFFSET_Y, 0f))
+        set(value) = prefs.edit().putFloat(KEY_KEYBOARD_OFFSET_Y, clampOffset(value)).apply()
+
+    private fun clampOffset(v: Float): Float {
+        if (v.isNaN()) return 0f
+        return v.coerceIn(-MAX_KEYBOARD_OFFSET_DP, MAX_KEYBOARD_OFFSET_DP)
+    }
 
     // ---------------- 证书固定（按服务器身份） ----------------
 
@@ -208,9 +223,6 @@ class SettingsStore(context: Context) {
 
         const val DEFAULT_PORT = 8443
 
-        const val DEFAULT_DIAG_HZ = 100
-        const val DEFAULT_DIAG_CIRCLE_MS = 2400
-
         private const val KEY_LAST_HOST = "last_host"
         private const val KEY_LAST_PORT = "last_port"
         private const val KEY_LAST_TOKEN = "last_token"
@@ -226,9 +238,15 @@ class SettingsStore(context: Context) {
         /** 上下方向默认值翻正的一次性迁移标记（见 [airMouseInvertY]） */
         private const val KEY_AIRMOUSE_INV_Y_MIGRATED = "airmouse_invert_y_migrated_v21"
         private const val KEY_AIRMOUSE_SCROLL = "airmouse_scroll_mode"
-        private const val KEY_DIAG_HZ = "diag_target_hz"
-        private const val KEY_DIAG_CIRCLE_MS = "diag_circle_ms"
-        private const val KEY_DIAG_ABS = "diag_use_absolute"
+
+        // ---- 键盘模式 ----
+        const val DEFAULT_KEYBOARD_LAYOUT = "qwerty"
+        private const val KEY_KEYBOARD_LAYOUT = "keyboard_layout"
+        private const val KEY_KEYBOARD_OFFSET_X = "keyboard_offset_x_dp"
+        private const val KEY_KEYBOARD_OFFSET_Y = "keyboard_offset_y_dp"
+
+        /** 全屏键盘位置偏移的存盘上限（dp）：比这更大的偏移在任何手机上都会被夹回屏幕内，存了也没用 */
+        const val MAX_KEYBOARD_OFFSET_DP = 400f
         private const val PIN_PREFIX = "cert_pin_"
         private const val CERT_PREFIX = "cert_hex_"
 

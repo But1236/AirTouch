@@ -84,8 +84,25 @@
     <!-- 触摸板 -->
     <string name="touchpad_sensitivity">灵敏度</string>
     <string name="touchpad_sensitivity_value">%1$.1fx</string>
-    <string name="touchpad_hint_move">单指拖动移动光标 · 单指点击 = 左键 · 双指拖动滚动 · 双指点击 = 右键</string>
-    <string name="touchpad_hint_scroll">滚轮模式：单指上下滑动滚动 · 双指点击 = 右键</string>
+    <string name="touchpad_hint_move">单指拖动移动光标 · 单指点击 = 左键 · 双击后按住 = 拖拽 · 双指滑动滚动 · 双指捏合 = 缩放 · 双指点击 = 右键 · 三指滑动/点击 = 系统手势</string>
+    <string name="touchpad_hint_scroll">滚轮模式：单指上下滑动滚动 · 双指捏合 = 缩放 · 双指点击 = 右键 · 三指滑动/点击 = 系统手势</string>
+
+    <!-- 原生触控缩放：开关在电脑端切后端，手机只显示电脑端的真实状态 -->
+    <string name="touchpad_zoom_native">原生触控缩放（电脑有触摸屏时）</string>
+    <string name="touchpad_zoom_refresh">重新检测</string>
+    <string name="touchpad_zoom_status_unknown">缩放后端：正在读取电脑端状态…</string>
+    <string name="touchpad_zoom_status_native">缩放后端：已激活原生触控栈（InjectTouchInput）</string>
+    <string name="touchpad_zoom_status_wheel">缩放后端：滚轮兼容模式（电脑端没有触控数字化仪）</string>
+    <string name="touchpad_zoom_status_wheel_touches">缩放后端：滚轮兼容模式 · 触控初始化失败 SM_MAXIMUMTOUCHES=%1$d</string>
+    <string name="touchpad_zoom_status_off">缩放后端：滚轮兼容模式（你已手动关闭原生触控）</string>
+    <string name="touchpad_zoom_probe_sent">已请电脑端重新检测触控能力</string>
+    <string name="touchpad_zoom_probe_offline">尚未连接电脑，先连上再重新检测</string>
+    <string name="touchpad_zoom_activated">电脑端已切换到原生触控缩放（InjectTouchInput）</string>
+    <string name="touchpad_zoom_guide_title">这台电脑没有触控数字化仪</string>
+    <string name="touchpad_zoom_guide_message">双指缩放会自动挑后端：电脑有触摸屏就走原生触控（InjectTouchInput，和真触摸屏一样的无级缩放），没有就自动回退「Ctrl + 滚轮」兼容模式——现在用的就是后者，能用，只是缩放分档。\n\n回退不需要你做任何事，也不用装任何驱动：AirTouch 不随包提供驱动，免安装、不碰系统证书。如果你给这台电脑插上了 USB 触摸屏、外接触控显示器，或在系统里启用了触控设备，点下面的「重新检测」，电脑端会立刻重新探测并自动热切换 —— 不用重启服务端，也不用断开手机。%1$s</string>
+    <string name="touchpad_zoom_guide_refresh">重新检测</string>
+    <string name="touchpad_zoom_guide_ok">知道了</string>
+    <string name="touchpad_zoom_guide_reason">\n\n电脑端说明：%1$s</string>
 
     <!-- 鼠标页 -->
     <string name="airmouse_sensitivity">灵敏度</string>

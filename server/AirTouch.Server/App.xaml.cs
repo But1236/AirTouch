@@ -5,13 +5,91 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using AirTouch.Core;
+using Microsoft.Win32;
 
 namespace AirTouch.Server;
+
+public enum ThemeMode
+{
+    Dark,
+    Light,
+    System,
+}
 
 public partial class App : Application
 {
     private AirTouchOptions? _options;
     private AirTouchLog? _log;
+    private static ResourceDictionary? _themeDictionary;
+
+    public static ThemeMode CurrentTheme { get; private set; } = ThemeMode.Dark;
+    public static string CurrentAccent { get; private set; } = "amber";
+
+    public static bool IsLightEffective => CurrentTheme switch
+    {
+        ThemeMode.Light => true,
+        ThemeMode.Dark => false,
+        _ => IsSystemLight(),
+    };
+
+    private static bool IsSystemLight()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is int value && value == 1;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Swaps the theme color dictionary; every style uses DynamicResource, so controls repaint live.</summary>
+    public static void SetTheme(ThemeMode mode)
+    {
+        CurrentTheme = mode;
+        var light = IsLightEffective;
+        var source = new Uri(light ? "Themes/Light.xaml" : "Themes/Dark.xaml", UriKind.Relative);
+        var dictionary = new ResourceDictionary { Source = source };
+
+        var merged = Current.Resources.MergedDictionaries;
+        if (_themeDictionary is not null)
+        {
+            merged.Remove(_themeDictionary);
+        }
+
+        _themeDictionary = dictionary;
+        merged.Add(dictionary);
+        ApplyAccent();
+    }
+
+    public static void SetAccent(string accent)
+    {
+        CurrentAccent = accent;
+        ApplyAccent();
+    }
+
+    private static void ApplyAccent()
+    {
+        // Light mode needs a darker amber to keep text and icon contrast on the soft white base.
+        var hex = (CurrentAccent, IsLightEffective) switch
+        {
+            ("amber", true) => "#FFD97706",
+            ("amber", false) => "#FFF5B841",
+            ("cyan", _) => "#FF38BDF8",
+            ("mint", _) => "#FF34D399",
+            ("coral", _) => "#FFFB7185",
+            ("violet", _) => "#FFA78BFA",
+            _ => "#FFF5B841",
+        };
+
+        var color = (Color)ColorConverter.ConvertFromString(hex);
+        Current.Resources["AccentColor"] = color;
+        // Replace the brush object itself so every DynamicResource AccentBrush consumer re-resolves.
+        Current.Resources["AccentBrush"] = new SolidColorBrush(color);
+    }
 
     /// <summary>True during <c>--smoke-test</c>: report errors instead of showing modal dialogs.</summary>
     public static bool HeadlessSelfTest { get; private set; }
@@ -19,6 +97,8 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        SetTheme(ThemeMode.Dark);
 
         _options = AirTouchOptions.CreateDefault();
         _log = new AirTouchLog(_options.DataDirectory);
@@ -52,7 +132,7 @@ public partial class App : Application
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
-        _log?.Error("界面线程未处理的异常", e.Exception);
+        _log?.Error("界面线程未处理的异常", new Exception(e.Exception.ToString()));
         if (HeadlessSelfTest)
         {
             Shutdown(1);
@@ -111,6 +191,19 @@ public partial class App : Application
                 protocolVersion = Protocol.Version,
                 trustedDeviceCount = status.TrustedDevices.Count,
                 downloadDirectory = status.DownloadDirectory,
+                // 双指缩放的后端（真触控注入 / Ctrl+滚轮回退）与探测结论，供自检报告留证。
+                zoomTouchAvailable = status.ZoomTouchAvailable,
+                zoomUnavailableReason = status.ZoomUnavailableReason,
+                zoomPreference = status.ZoomPreference,
+                zoomBackend = status.ZoomBackend,
+                zoomMaximumTouches = status.ZoomMaximumTouches,
+                zoomDigitizer = status.ZoomDigitizer,
+                zoomProbedAt = status.ZoomProbedAt.ToString("O"),
+                // 界面真的带上了三选一（不是只把状态写在报告里）：自检会断言这一项等于 3。
+                zoomModeChoices = window.ZoomModeChoiceCount,
+                zoomModeSelected = window.SelectedZoomPreference,
+                touchCommands = status.TouchCommands,
+                scrollCommands = status.ScrollCommands,
                 qrBytes = window.LastQrPngLength,
                 qrPixelsPerModule = window.LastQrPixelsPerModule,
                 qrModuleCount = window.LastQrModuleCount,

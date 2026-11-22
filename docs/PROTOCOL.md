@@ -180,7 +180,11 @@ URL 与 `auth_req` 的校验顺序固定为：
 | --- | --- | --- |
 | `move` | `dx:int`, `dy:int` | 鼠标相对移动（像素，右/下为正）。`dx`/`dy` 被截断到 `[-4096, 4096]` |
 | `click` | `button:"left"\|"right"` | 单击；`button` 缺省视为 `left` |
-| `scroll` | `amount:int` | 滚轮；正数上滚，负数下滚。截断到 `[-120, 120]` |
+| `button` | `button:"left"\|"right"`, `down:bool` | **鼠标按键的一次状态变化**（只有按下或只有抬起，与 `key` 同构，§2.6）。它存在的唯一理由是拖拽：按下 → 一串 `move` 帧 → 抬起。`button` 缺省视为 `left`；`down` 缺省（或不是布尔值）按 `false`（抬起）处理 —— 抬起一个没按下的键是无害的空操作，而缺省「按下」会在电脑上留下一个永远不松开的鼠标键，整个桌面会一直处于拖拽框选中。**抬起帧由客户端负责发**；服务端在连接结束时（§2.6 同款卡键保护）与收到 `reset` 时会把所有按下的鼠标键抬起 |
+| `scroll` | `amount:int` 或 `delta:int`, `axis?:"v"\|"h"` | 滚轮。`amount` 是「格」（正数上滚，负数下滚），截断到 `[-120, 120]`；`delta` 是**原生滚轮单位**（`120` = 1 格，可以远小于 120），截断到 `[-1200, 1200]`。**`delta` 存在时优先于 `amount`**；`amount` 保持旧语义 `amount × 120`。`axis:"h"` 走横向滚轮（`MOUSEEVENTF_HWHEEL`），其它值按纵向 |
+| `touch` | `phase:"down"\|"move"\|"up"`, `scale?:double`, `dx?:int`, `dy?:int` | **双指捏合/张开的几何流**。`phase` 是 `down`（两指出手）、`move`（携带相对缩放倍数与手势中心位移）、`up`（抬手）；`phase` 不是这三个值之一时整帧被忽略。客户端只发几何量，**用触控注入还是 `Ctrl`+高精度滚轮由服务端决定**（见下文），实际用的是哪条会通过 `zoom_status` 告知 |
+| `zoom_mode` | `mode:"auto"\|"native"\|"wheel"` | **缩放偏好**（大小写不敏感）。`auto`（默认）= 有触控栈就用原生触控、否则滚轮；`native` = 优先原生触控，但没有触控栈时照样回退，并通过 `zoom_status.available=false` 如实告知；`wheel` = 即使有触摸屏也强制 `Ctrl`+滚轮。`mode` 缺失、`null`、数字或拼错一个字母时**整帧被忽略**（与 `touch.phase` 同一条规则）—— 静默按 `auto` 处理只会让客户端的拼写错误看起来像设置成功了 |
+| `zoom_probe` | 无 | **立刻重新探测触控能力**：服务端重读 `SM_MAXIMUMTOUCHES`（`>0` 时再试 `InitializeTouchInjection`），若因此变得可用就**热切换**到 `InjectTouchInput` —— 不需要重启服务端，也不需要断开手机。无论结论是否变化都会回一帧 `zoom_status` |
 | `reset` | 无 | 光标复位到主屏中心 |
 | `key` | `vk:int`, `down:bool`, `ext?:bool` | **键盘按键的一次状态变化**（§2.6）。`vk` 为 Win32 虚拟键码（`1..255`，越界被截断）；`down=true` 是 KEY_DOWN、`false` 是 KEY_UP；`ext` 可选，显式指定 `KEYEVENTF_EXTENDEDKEY` |
 | `text` | `s:string` | **注入一段 Unicode 文本**（§2.7）。与键盘布局无关，中文/emoji 都走这条；`s` 截断到 256 个 UTF-16 码元。缺 `s` 或 `s` 不是 JSON 字符串时整帧被忽略 |
@@ -190,24 +194,112 @@ URL 与 `auth_req` 的校验顺序固定为：
 | `hello` | `deviceName?:string`, `appVersion?:string` | 可选：认证通过后上报设备信息，供服务端 UI 显示 |
 | `ping` | 无 | 可选心跳 |
 
-示例：
+示例（拖拽 = 第 2 行的按住、若干 `move`、第 4 行的松开，缺一不可）：
 
 ```json
 {"type":"move","dx":10,"dy":-5}
 {"type":"click","button":"left"}
+{"type":"button","button":"left","down":true}
+{"type":"button","button":"left","down":false}
 {"type":"scroll","amount":3}
+{"type":"scroll","delta":15}
+{"type":"scroll","delta":-20,"axis":"h"}
 {"type":"reset"}
 {"type":"key","vk":17,"down":true}
 {"type":"text","s":"你好"}
 {"type":"file_header","fileName":"test.txt","fileSize":1024}
+{"type":"touch","phase":"down"}
+{"type":"touch","phase":"move","scale":1.35,"dx":-4,"dy":2}
+{"type":"touch","phase":"up"}
+{"type":"zoom_mode","mode":"wheel"}
+{"type":"zoom_probe"}
 ```
+
+#### 双指捏合（`touch`）与高精度滚动（`scroll.delta`）
+
+**为什么是一条几何流，而不是「放大 / 缩小」两条命令**：手机并不知道电脑当前的缩放级别，也不该
+知道 —— 它能测到的只有「两指间距是手势开始时的几倍」和「手势中心移动了多少」。服务端拿这两个量
+复原手势，至于用哪个 Windows API，是服务端的实现细节：
+
+| 服务端后端 | 条件 | 实现 |
+| --- | --- | --- |
+| 触控注入 | 偏好不是 `wheel`，且本机有触摸输入栈（`SM_MAXIMUMTOUCHES > 0` 且 `InitializeTouchInjection` 成功） | `InjectTouchInput` 放两个水平对称的虚拟触点：间距 = `BaseSpanPx(240) × scale`，中心 = 手势开始时的光标位置 + 累计 `dx`/`dy` |
+| 滚轮回退 | 其它情况（偏好为 `wheel`，或本机没有触控栈） | `Ctrl` + 高精度滚轮：两指间距每变化 **12%** 记 1 格，即 `units = ln(scale ÷ 上一帧 scale) ÷ ln(1.12) × 120`；单帧最多 120 单位，多出来的留到后续帧 |
+
+两条路对 `touch` 帧本身完全等价：这条帧里没有、也不会有「用哪个后端」这种字段（后端是服务端的实现
+细节）。但服务端**会**通过 `zoom_status`（以及 `welcome` 里的快照字段）主动告诉手机当前实际生效的是
+哪一条，并对手机发来的偏好（`zoom_mode`）作出响应 —— 见下一小节。服务端启动时探测一次能力，并在窗口
+日志里写一句人话（例如「本机没有触摸数字化仪（`SM_MAXIMUMTOUCHES=0`），双指缩放改用 `Ctrl`+高精度
+滚轮」）。
+
+| 字段 | 说明 |
+| --- | --- |
+| `phase` | `"down"` / `"move"` / `"up"`，大小写不敏感。**不是这三个值之一（缺字段、`null`、数字、拼错）时整帧被忽略**，与 `text` 缺 `s` 同一条规则（§2.7）：静默当成某个阶段，只会让客户端的一个拼写错误看起来像手势生效了。`down` 之后是一串 `move`，最后应当发 `up` |
+| `scale` | double，「当前两指间距 ÷ 手势开始时的间距」，**相对值**，因此与手机的屏幕尺寸、dpi 无关。缺省或非数字按 `1.0`（按 0 会让一次捏合变成缩到最小）；截断到 `[0.05, 20]`。只在 `move` 上有意义 |
+| `dx`/`dy` | int，手势中心相对**上一帧**的移动（屏幕像素，右 / 下为正），截断到 `[-4096, 4096]`，缺省 0。触控后端用它移动两个触点；**回退后端忽略它** —— 捏合不该把用户的光标拖着走，双指平移请用 `scroll` 帧 |
+
+`up` 之后所有手势状态清零，再次 `down` 是新手势。没有 `down` 的 `move` 被忽略（不会凭空造出一对
+没人按下的触点）；没有 `up` 就断线时由服务端收尾（见下）。
+
+**高精度滚动**：`delta` 用原生滚轮单位，`120` 是一格，但 `15`/`20` 这种小于一格的量 Windows 会替
+应用累加，所以双指上下 / 左右滑可以按像素级细粒度发送 —— 这正是「丝滑滚动」与「一格一格跳」的
+区别。`amount` 保持旧语义，老客户端逐字节不变：`{"type":"scroll","amount":3}` 与
+`{"type":"scroll","delta":360}` 在服务端产生同一个滚轮事件。`delta` 只要**存在**就优先于 `amount`，
+即使它写不出数字（按 `0` 处理，§2.3），也不会静默退回 `amount` —— 那会让一个拼写错误看起来像成功。
+
+**卡住保护（服务端必须实现）**：与鼠标按键（§2.1）、键盘修饰键（§2.6）同一条规则 —— 会话结束时
+（socket 关闭 / 被踢 / 看门狗超时 / 撤销信任 / 服务停止 / 收到 `reset`），服务端必须收掉还没结束的
+手势：触控后端抬起（或取消）两个虚拟触点，回退后端保证 `Ctrl` 已经抬起。回退后端每次滚轮注入都是
+自成一体的一组 `Ctrl down → wheel → Ctrl up`，绝不长时间按住 `Ctrl`。一个卡住的触点和一个卡住的
+`Ctrl`，都会让用户的桌面变得不可用。
+
+#### 缩放偏好、运行期重探与后端状态（`zoom_mode` / `zoom_probe` / `zoom_status`）
+
+谁用哪个后端本来完全由服务端自己决定，客户端看不见也管不着。这一节加的三件事是：**偏好**（客户端
+想用哪个）、**状态**（实际用的是哪个）、**重探**（PC 刚接上触控设备，立刻切过去）。一句话概括：
+`zoom_mode` 写偏好，`zoom_probe` 让服务端重读硬件，`zoom_status` 把结果告诉手机。
+
+| 偏好（`preference`） | 有触控栈的机器 | 没有触控栈的机器 |
+| --- | --- | --- |
+| `auto`（默认） | `native_touch` | `ctrl_wheel_fallback`，`available=false` |
+| `native` | `native_touch` | `ctrl_wheel_fallback`，`available=false`（**如实报告不可用**） |
+| `wheel` | `ctrl_wheel_fallback`，`available=true` | `ctrl_wheel_fallback`，`available=false` |
+
+`preference` 与 `mode` 是两件事，别混：`mode` 只说**实际生效**的后端，永远只取 `native_touch` /
+`ctrl_wheel_fallback` 两个值之一；想知道用户选了什么，看 `preference`。
+
+`zoom_status` 的发送时机（三条都要做到）：
+
+1. `welcome` 之后**立刻**再发一帧（`welcome` 里也带了同样的快照字段 `zoomMode`/`zoomAvailable`/
+   `zoomReason`/`zoomPreference`，这是刻意的冗余：手机重连后第一帧就是对的，不必等第二次状态变化）；
+2. 状态**发生变化**时 —— 手机改偏好、PC 窗口改偏好、PC 窗口点「重新检测」、热切换成功或失败；
+3. 收到 `zoom_mode` / `zoom_probe` 后立刻回一帧；`zoom_probe` **即使结论没变也要回**：用户按了按钮，
+   必须看到反馈。
+
+**热切换会打断正在进行的手势**：如果一个捏合正做到一半（发了 `down`、还没发 `up`），而此时后端从滚轮
+切成原生触控（或反向），服务端会先把旧后端收干净（抬触点 / 抬 `Ctrl`），然后**忽略**后续 `move`，直到
+客户端重新发 `down`。所以客户端收到 `zoom_status` 且 `mode` 与上次不同时，应当把手上的手势当成已被
+服务端结束：要么重新发 `down` 续上，要么等用户松手后再开始新的捏合。**绝不能假设「切后端不打断
+手势」** —— 那样会在电脑上留下一个永远没人抬起的触点。
+
+**为什么不随包提供虚拟触摸驱动**：AirTouch 与服务端都是 MIT，定位是「装完即用」——不申请证书、不要求
+测试模式、不安装任何驱动、不改系统设置。所以原生触控这条路的**唯一前提是这台电脑本身已有触控数字化仪**
+（笔记本触摸屏、USB 触摸屏、外接触控显示器）：有就用，没有就自动回退 `Ctrl`+高精度滚轮，两条路都不需要
+用户做任何配置。`zoom_probe` 因此只解决一件事：**用户给电脑接上/启用了触控设备之后，不必重启服务端、
+不必让手机重连**，点一下「重新检测」就当场重读 `SM_MAXIMUMTOUCHES` 并热切换。将来若真有可自由再分发、
+微软签名的虚拟触摸驱动，它也只是让 `SM_MAXIMUMTOUCHES` 变成 `>0` 而已 —— 协议、这三条帧与客户端都
+不需要再改，服务端也不需要新增任何「安装驱动」的接口。
+
+> 这三条帧都是**纯新增**：老客户端不发它们，服务端照旧按「启动时探测一次」的结果工作；协议版本仍是
+> `2`（§5）。
 
 ### 2.2 服务端 → 客户端
 
 | type | 载荷 | 说明 |
 | --- | --- | --- |
 | `auth_challenge` | 见 §1.2 | 连接建立后的第一帧 |
-| `welcome` | 见 §1.2 | 认证通过后的第一帧 |
+| `welcome` | 见 §1.2；另带初始缩放快照 `zoomMode`/`zoomAvailable`/`zoomReason`/`zoomPreference`（与 `zoom_status` 同义，刻意冗余） | 认证通过后的第一帧 |
+| `zoom_status` | `mode:"native_touch"\|"ctrl_wheel_fallback"`, `available:bool`, `reason:string`, `preference:"auto"\|"native"\|"wheel"`, `maxTouches:int`, `digitizer:int` | 当前缩放状态：`mode` 是**实际生效**的后端，`preference` 是偏好，`reason` 只在不可用时非空（中文句子），后两项是 `SM_MAXIMUMTOUCHES`/`SM_DIGITIZER` 的原始值，供手机端诊断展示。发送时机见 §2.1 |
 | `file_header` | `fileName:string`, `fileSize:int`, `fileId?:string` | 服务端向手机发文件（见 §3） |
 | `file_end` | `fileId?:string` | 可选：显式结束 |
 | `file_ack` | `fileName`, `status:"ok"\|"error"`, `bytes:int`, `savedPath?:string`, `message?:string` | 服务端对**收到**的文件的回执 |
@@ -421,6 +513,13 @@ NumLock 打开时「左箭头」会变成小键盘 `4`，「Delete」会变成�
 - 新增消息类型属于向后兼容变更：接收方忽略未知类型即可（§2.3）。
   键盘模式的 `key`（§2.6）就是这样加进来的：旧服务端收到它会走「忽略未知指令」分支，
   手机端的键盘区表现为「按下没反应」，但鼠标、触摸板、文件传输全部不受影响。
-  因此协议版本仍然是 `2`；如果要用键盘模式，服务端与手机端都要升级到带 §2.6 的版本。
+  同样地，双指捏合的 `touch` 帧与 `scroll` 的 `delta`/`axis` 也是纯新增：旧服务端收到 `touch` 会
+  走「忽略未知指令」，收到带 `delta` 的 `scroll` 会按 `amount`（缺省 0）处理，其余功能不受影响。
+  因此协议版本仍然是 `2`；如果要用键盘模式或双指缩放，服务端与手机端都要升级到带 §2.6 / §2.1
+  「双指捏合」的版本。
+- 缩放偏好与状态（`zoom_mode` / `zoom_probe` / `zoom_status`，§2.1）同样是纯新增：旧服务端收到
+  `zoom_mode` / `zoom_probe` 走「忽略未知指令」，新服务端在没有它们的手机上照旧按启动时探测的结果
+  工作；`welcome` 多出的 `zoomMode`/`zoomAvailable`/`zoomReason`/`zoomPreference` 对不认它们的客户端
+  只是未知字段（§2.3 要求忽略）。协议版本仍是 `2`。
 - 数值字段统一使用整数（除 `fileId`、`sid`、`keyId`、`fp`、`nonce`、`sign`、`pubKey` 等字符串字段）。
 - 时间统一为 Unix 秒（UTC），仅在认证阶段使用，且允许 ±120s 偏差。

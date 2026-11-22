@@ -7,7 +7,11 @@ public enum MessageKind
     Unknown = 0,
     Move,
     Click,
+    Button,
     Scroll,
+    Touch,
+    ZoomMode,
+    ZoomProbe,
     Reset,
     Key,
     Text,
@@ -17,6 +21,18 @@ public enum MessageKind
     Ping,
     Pong,
     AuthReq,
+}
+
+/// <summary>
+/// The three <c>phase</c> values a <c>touch</c> frame may carry (docs/PROTOCOL.md §2.1).
+/// <see cref="None"/> is the "not one of them, ignore the whole frame" case.
+/// </summary>
+public enum TouchPhase
+{
+    None = 0,
+    Down,
+    Move,
+    Up,
 }
 
 /// <summary>A decoded control frame. Unknown frames decode to <see cref="MessageKind.Unknown"/>.</summary>
@@ -33,6 +49,44 @@ public sealed class ControlMessage
     public int Amount { get; init; }
 
     public MouseButton Button { get; init; } = MouseButton.Left;
+
+    // ---- scroll (docs/PROTOCOL.md §2.1) ----
+
+    /// <summary>
+    /// Native wheel units when the frame carried <c>delta</c>; <c>null</c> means "use
+    /// <see cref="Amount"/> × 120" (the pre-<c>delta</c> client). Values below 120 are what makes a
+    /// pixel-smooth two-finger scroll possible.
+    /// </summary>
+    public int? ScrollDelta { get; init; }
+
+    /// <summary>Which wheel the frame feeds; only <c>"axis":"h"</c> selects the horizontal one.</summary>
+    public ScrollAxis ScrollAxis { get; init; } = ScrollAxis.Vertical;
+
+    // ---- button (docs/PROTOCOL.md §2.1) ----
+
+    /// <summary><c>true</c> = button down, <c>false</c> = button up.</summary>
+    public bool ButtonDown { get; init; }
+
+    // ---- touch (docs/PROTOCOL.md §2.1) ----
+
+    /// <summary>Gesture phase; <see cref="TouchPhase.Move"/> carries the geometry.</summary>
+    public TouchPhase TouchPhase { get; init; } = TouchPhase.None;
+
+    /// <summary>
+    /// Current two-finger span ÷ the span at <c>down</c>, clamped to
+    /// <c>[<see cref="Protocol.MinScale"/>, <see cref="Protocol.MaxScale"/>]</c>. Relative, so it holds
+    /// across screen sizes and densities. Only meaningful for <see cref="TouchPhase.Move"/>.
+    /// </summary>
+    public double Scale { get; init; } = 1.0;
+
+    // ---- zoom_mode (docs/PROTOCOL.md §2.1) ----
+
+    /// <summary>
+    /// Which backend the client <em>prefers</em> for two-finger pinch; <c>null</c> for every other frame.
+    /// A preference, not a command: <see cref="ZoomMode.NativeTouch"/> still falls back to the wheel when
+    /// the machine has no touch stack (and says so via <c>zoom_status.available</c>).
+    /// </summary>
+    public ZoomMode? ZoomPreference { get; init; }
 
     // ---- key (docs/PROTOCOL.md §2.6) ----
 
@@ -93,6 +147,17 @@ public static class Protocol
     public const int MaxMoveStep = 4096;
 
     public const int MaxScrollAmount = 120;
+
+    /// <summary>
+    /// Bounds of the legacy <c>amount</c> field, in notches, and of the newer <c>delta</c> field, in
+    /// native wheel units (docs/PROTOCOL.md §2.1).
+    /// </summary>
+    public const int MaxScrollDelta = 1200;
+
+    /// <summary>Bounds for the relative <c>scale</c> of a <c>touch</c> frame.</summary>
+    public const double MinScale = 0.05;
+
+    public const double MaxScale = 20.0;
 
     /// <summary>Highest Win32 virtual-key code; anything larger is not a virtual key and is clamped away.</summary>
     public const int MaxVirtualKey = 255;
@@ -184,6 +249,23 @@ public static class Protocol
                 };
             }
 
+            if (type.Equals("button", StringComparison.OrdinalIgnoreCase))
+            {
+                var button = GetString(root, "button");
+                return new ControlMessage
+                {
+                    Kind = MessageKind.Button,
+                    RawType = type,
+                    Button = string.Equals(button, "right", StringComparison.OrdinalIgnoreCase)
+                        ? MouseButton.Right
+                        : MouseButton.Left,
+                    // 缺省为「抬起」而不是「按下」，与 key 的 down 同一条规则（§2.6）：抬起一个没按下
+                    // 的键是无害的空操作，而缺省按下会在电脑上留下一个永远不松开的鼠标键 —— 那比卡住
+                    // 一个按键更糟，整个桌面会一直处于拖拽框选状态。
+                    ButtonDown = GetBool(root, "down", fallback: false),
+                };
+            }
+
             if (type.Equals("scroll", StringComparison.OrdinalIgnoreCase))
             {
                 return new ControlMessage
@@ -191,7 +273,85 @@ public static class Protocol
                     Kind = MessageKind.Scroll,
                     RawType = type,
                     Amount = Math.Clamp(GetInt(root, "amount"), -MaxScrollAmount, MaxScrollAmount),
+                    // delta 只要**存在**就优先于 amount：老客户端只发 amount，行为逐字节不变；新客户端
+                    // 发 delta 才能用 15/20 这种远小于 120 的细粒度。delta 存在但写不出数字时按 0 处理
+                    // （§2.3：解析失败即 0），而不是悄悄退回 amount —— 那会让一个拼写错误看起来像成功了。
+                    ScrollDelta = root.TryGetProperty("delta", out _)
+                        ? Math.Clamp(GetInt(root, "delta"), -MaxScrollDelta, MaxScrollDelta)
+                        : null,
+                    ScrollAxis = string.Equals(GetString(root, "axis"), "h", StringComparison.OrdinalIgnoreCase)
+                        ? ScrollAxis.Horizontal
+                        : ScrollAxis.Vertical,
                 };
+            }
+
+            if (type.Equals("touch", StringComparison.OrdinalIgnoreCase))
+            {
+                // phase 必须是 down/move/up 之一：缺字段、null、给成数字或写错一个字母，都整帧忽略。
+                // 与 text 缺 s 同一条规则（§2.7）—— 「手机发错了一个字段」与「手机想做一次手势」是两回事，
+                // 静默当成某个阶段只会让客户端的拼写错误看起来像手势生效了。
+                var phase = GetString(root, "phase");
+                var parsedPhase = phase?.ToLowerInvariant() switch
+                {
+                    "down" => TouchPhase.Down,
+                    "move" => TouchPhase.Move,
+                    "up" => TouchPhase.Up,
+                    _ => TouchPhase.None,
+                };
+
+                if (parsedPhase == TouchPhase.None)
+                {
+                    return null;
+                }
+
+                var scale = GetDouble(root, "scale", 1.0);
+                if (!double.IsFinite(scale))
+                {
+                    scale = 1.0;
+                }
+
+                return new ControlMessage
+                {
+                    Kind = MessageKind.Touch,
+                    RawType = type,
+                    TouchPhase = parsedPhase,
+                    Scale = Math.Clamp(scale, MinScale, MaxScale),
+                    Dx = Math.Clamp(GetInt(root, "dx"), -MaxMoveStep, MaxMoveStep),
+                    Dy = Math.Clamp(GetInt(root, "dy"), -MaxMoveStep, MaxMoveStep),
+                };
+            }
+
+            if (type.Equals("zoom_mode", StringComparison.OrdinalIgnoreCase))
+            {
+                // mode 必须是 auto/native/wheel 之一（大小写不敏感）：缺字段、null、给成数字或拼错一个
+                // 字母，都整帧忽略 —— 与 touch 的 phase 同一条规则。这里不能「非法就按 auto」：静默按
+                // 默认值处理，会让客户端把 wheel 拼成 weel 时看起来像设置成功了，而用户还在等原生触控。
+                var mode = GetString(root, "mode");
+                var parsedMode = mode?.ToLowerInvariant() switch
+                {
+                    "auto" => ZoomMode.Auto,
+                    "native" => ZoomMode.NativeTouch,
+                    "wheel" => ZoomMode.WheelFallback,
+                    _ => (ZoomMode?)null,
+                };
+
+                if (parsedMode is null)
+                {
+                    return null;
+                }
+
+                return new ControlMessage
+                {
+                    Kind = MessageKind.ZoomMode,
+                    RawType = type,
+                    ZoomPreference = parsedMode,
+                };
+            }
+
+            if (type.Equals("zoom_probe", StringComparison.OrdinalIgnoreCase))
+            {
+                // 没有字段：这条帧的语义就是「现在、立刻重新探测一次」。
+                return new ControlMessage { Kind = MessageKind.ZoomProbe, RawType = type };
             }
 
             if (type.Equals("reset", StringComparison.OrdinalIgnoreCase))
@@ -342,7 +502,8 @@ public static class Protocol
         string sid,
         int displayHz,
         string? keyId,
-        string authMode) =>
+        string authMode,
+        ZoomStatus? zoom = null) =>
         Serialize(new Dictionary<string, object?>
         {
             ["type"] = "welcome",
@@ -353,6 +514,35 @@ public static class Protocol
             ["displayHz"] = displayHz,
             ["keyId"] = keyId,
             ["authMode"] = authMode,
+            // 初始快照：`welcome` 之后紧跟的 `zoom_status` 才是权威的那一份，这几项是刻意的冗余 ——
+            // 重连时手机拿到的第一帧就已经带着正确状态，不必等第二帧才知道自己是哪种缩放模式。
+            // zoomMode 与 zoom_status.mode 同义（**实际生效**的后端），zoomPreference 才是偏好。
+            ["zoomMode"] = zoom?.Backend.ToWire(),
+            ["zoomAvailable"] = zoom?.Capability.Available,
+            ["zoomReason"] = zoom?.Capability.Reason,
+            ["zoomPreference"] = zoom?.Preference.ToWire(),
+        });
+
+    /// <summary>
+    /// Server → client: the effective zoom backend plus its evidence (docs/PROTOCOL.md §2.1).
+    /// </summary>
+    /// <remarks>
+    /// Sent right after <c>welcome</c>, on every change, and as an acknowledgement of <c>zoom_mode</c> /
+    /// <c>zoom_probe</c>. <c>mode</c> is what is <b>actually in effect</b>, never what was asked for;
+    /// <c>preference</c> is what was asked for.
+    /// </remarks>
+    public static string BuildZoomStatus(ZoomStatus status) =>
+        Serialize(new Dictionary<string, object?>
+        {
+            ["type"] = "zoom_status",
+            ["mode"] = status.Backend.ToWire(),
+            ["available"] = status.Capability.Available,
+            ["reason"] = status.Capability.Reason,
+            ["preference"] = status.Preference.ToWire(),
+            // 手机端的诊断展示用：这两个是 GetSystemMetrics 的原始值，方便对着「这台电脑到底有没有
+            // 触摸数字化仪」自查（例如刚插上外接触控屏时该看到它变化）。
+            ["maxTouches"] = status.Capability.MaximumTouches,
+            ["digitizer"] = status.Capability.Digitizer,
         });
 
     public static string BuildFileHeader(string fileName, long fileSize, string fileId) =>
@@ -465,6 +655,33 @@ public static class Protocol
             > int.MaxValue => int.MaxValue,
             < int.MinValue => int.MinValue,
             _ => (int)value,
+        };
+    }
+
+    /// <summary>
+    /// Reads a fractional field (the <c>touch</c> frame's <c>scale</c>), tolerating numbers and numeric
+    /// strings. Anything absent, unparsable or non-finite yields <paramref name="fallback"/>.
+    /// </summary>
+    private static double GetDouble(JsonElement root, string name, double fallback)
+    {
+        if (!root.TryGetProperty(name, out var element))
+        {
+            return fallback;
+        }
+
+        return element.ValueKind switch
+        {
+            JsonValueKind.Number => element.TryGetDouble(out var number) ? number : fallback,
+            // 字符串形式必须按不变文化解析：JSON 的小数点永远是「.」，而 double.TryParse 默认跟当前
+            // 区域设置走 —— 在把逗号当小数点的系统上 "1.35" 会被读成 135，缩放会直接失控。
+            JsonValueKind.String => double.TryParse(
+                element.GetString(),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var parsed)
+                ? parsed
+                : fallback,
+            _ => fallback,
         };
     }
 

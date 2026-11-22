@@ -2,6 +2,7 @@ package com.airtouch.app.settings
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.airtouch.app.net.Protocol
 
 /**
  * 应用设置存储（SharedPreferences 封装）。
@@ -74,6 +75,28 @@ class SettingsStore(context: Context) {
     var scrollMode: Boolean
         get() = prefs.getBoolean(KEY_SCROLL_MODE, false)
         set(value) = prefs.edit().putBoolean(KEY_SCROLL_MODE, value).apply()
+
+    /**
+     * 双指缩放的后端偏好（协议 §2.1 的 `zoom_mode`）：`native` = 优先原生触控注入，
+     * `wheel` = 强制 Ctrl+滚轮回退，`auto` = 由电脑端自己挑。
+     *
+     * **null 表示用户从没动过这个开关**，此时连接后不发 `zoom_mode`，电脑端保持自己的 `auto`
+     * 判断（有触摸栈就用原生）。一旦用户拨过开关，偏好就固定下来并在每次连接后重发 ——
+     * 否则换台电脑或服务端重启后，用户「明明关过」的开关又会自己打开。
+     *
+     * 这是**电脑端**的设置，不是本机设置：两台手机连同一台电脑时以最后写入者为准。
+     */
+    var zoomPreference: String?
+        get() = prefs.getString(KEY_ZOOM_PREFERENCE, null)?.let {
+            when (it) {
+                Protocol.ZOOM_PREF_NATIVE -> Protocol.ZOOM_PREF_NATIVE
+                Protocol.ZOOM_PREF_WHEEL -> Protocol.ZOOM_PREF_WHEEL
+                else -> null
+            }
+        }
+        set(value) = prefs.edit().apply {
+            if (value == null) remove(KEY_ZOOM_PREFERENCE) else putString(KEY_ZOOM_PREFERENCE, value)
+        }.apply()
 
     // ---------------- 鼠标页 ----------------
     //
@@ -231,6 +254,7 @@ class SettingsStore(context: Context) {
         private const val KEY_LAST_KEY_ID = "last_key_id"
         private const val KEY_TOUCHPAD_SENS = "touchpad_sensitivity"
         private const val KEY_SCROLL_MODE = "scroll_mode"
+        private const val KEY_ZOOM_PREFERENCE = "zoom_preference"
         private const val KEY_AIRMOUSE_SENS = "airmouse_sensitivity"
         private const val KEY_AIRMOUSE_INV_X = "airmouse_invert_x"
         private const val KEY_AIRMOUSE_INV_Y = "airmouse_invert_y"

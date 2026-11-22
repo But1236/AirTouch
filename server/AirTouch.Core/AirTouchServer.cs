@@ -30,7 +30,15 @@ public sealed record ServerStatus(
     long BytesReceived,
     long BytesSent,
     long SendInputFailures,
-    long KeyInputFailures);
+    long KeyInputFailures,
+    long TouchCommands,
+    bool ZoomTouchAvailable,
+    string ZoomUnavailableReason,
+    string ZoomPreference,
+    string ZoomBackend,
+    int ZoomMaximumTouches,
+    int ZoomDigitizer,
+    DateTimeOffset ZoomProbedAt);
 
 public sealed record FileSendProgress(string FileName, long SentBytes, long TotalBytes)
 {
@@ -93,6 +101,8 @@ public sealed class AirTouchServer : IDisposable
     private readonly AirTouchOptions _options;
     private readonly IMouseController _mouse;
     private readonly IKeyboardController _keyboard;
+    private readonly IZoomGestureController _zoom;
+    private readonly IVirtualTouchManager _virtualTouch;
     private readonly IAirTouchLog _log;
     private readonly ConnectionGuard _guard;
     private readonly ServerCertificate _certificate;
@@ -120,6 +130,7 @@ public sealed class AirTouchServer : IDisposable
     private long _resetCommands;
     private long _keyCommands;
     private long _textCommands;
+    private long _touchCommands;
     private long _bytesReceived;
     private long _bytesSent;
 
@@ -127,12 +138,28 @@ public sealed class AirTouchServer : IDisposable
         AirTouchOptions options,
         IMouseController mouseController,
         IAirTouchLog? log = null,
-        IKeyboardController? keyboardController = null)
+        IKeyboardController? keyboardController = null,
+        IZoomGestureController? zoomGestureController = null,
+        IVirtualTouchManager? virtualTouchManager = null)
     {
         _options = options;
         _mouse = mouseController;
         _keyboard = keyboardController ?? new Win32KeyboardController(log);
         _log = log ?? NullLog.Instance;
+
+        // 触控能力/缩放偏好只有一份状态：手机发来的 zoom_mode、窗口里的三选一、状态栏显示的后端，全
+        // 都读同一个 manager —— 所以「谁后改谁生效」，不会出现手机说原生、窗口说滚轮的场面。真实实现
+        // 在构造时做一次能力探测并把结论写进日志。
+        //
+        // 自检时请把 manager 和控制器**成对**注入：只注入 zoomGestureController 的话，这个服务端会另
+        // 外建一个真实 manager 来出状态，而那个记录型控制器用的还是它自己的判断。
+        _virtualTouch = virtualTouchManager ?? new Win32VirtualTouchManager(_log);
+
+        // 双指缩放的后端（真触控注入 / Ctrl+滚轮回退）由服务端在这里定下来，客户端只发几何量。
+        _zoom = zoomGestureController ?? new Win32ZoomGestureController(mouseController, _keyboard, _log, _virtualTouch);
+
+        // 控制器先订阅（上一行），服务端后订阅：切换后端时先把手势收干净，再往外推 zoom_status。
+        _virtualTouch.StatusChanged += OnVirtualTouchStatusChanged;
 
         _guard = new ConnectionGuard(options, _log);
         _guard.Changed += (_, _) => RaiseStatusChanged();
@@ -192,6 +219,9 @@ public sealed class AirTouchServer : IDisposable
 
     public ServerStatus GetStatus()
     {
+        // 全部读缓存值：这个方法是界面定时刷新用的，不能在这里走文件系统。
+        var zoom = _virtualTouch.Status;
+
         lock (_gate)
         {
             return new ServerStatus(
@@ -221,9 +251,42 @@ public sealed class AirTouchServer : IDisposable
                 BytesReceived: Interlocked.Read(ref _bytesReceived),
                 BytesSent: Interlocked.Read(ref _bytesSent),
                 SendInputFailures: _mouse.SendInputFailures,
-                KeyInputFailures: _keyboard.SendInputFailures);
+                KeyInputFailures: _keyboard.SendInputFailures,
+                TouchCommands: Interlocked.Read(ref _touchCommands),
+                ZoomTouchAvailable: zoom.Capability.Available,
+                ZoomUnavailableReason: zoom.Capability.Reason,
+                ZoomPreference: zoom.Preference.ToWire(),
+                ZoomBackend: zoom.Backend.ToWire(),
+                ZoomMaximumTouches: zoom.Capability.MaximumTouches,
+                ZoomDigitizer: zoom.Capability.Digitizer,
+                ZoomProbedAt: zoom.Capability.ProbedAt);
         }
     }
+
+    /// <summary>
+    /// Sets the zoom preference from the window. Shares the manager with the phone frame
+    /// <c>zoom_mode</c>, so whichever side writes last wins; a change pushes <c>zoom_status</c> to the
+    /// connected phone, and a no-op also gets an explicit push so the two sides never disagree silently.
+    /// </summary>
+    public void SetZoomMode(ZoomMode mode)
+    {
+        var before = _virtualTouch.Status;
+        _virtualTouch.Mode = mode;
+        if (_virtualTouch.Status == before)
+        {
+            PushZoomStatus();
+        }
+    }
+
+    /// <summary>
+    /// Re-probes the machine (window button 「重新检测触控能力」): a touchscreen that was plugged in — or a
+    /// touch device that was just enabled in Windows — must switch the backend without restarting the
+    /// server. Always pushes <c>zoom_status</c>.
+    /// </summary>
+    public ZoomStatus RefreshZoomCapability() => _virtualTouch.Refresh();
+
+    /// <summary>The effective zoom state, for the window's mode selector and status line.</summary>
+    public ZoomStatus ZoomStatus => _virtualTouch.Status;
 
     public void Start()
     {
@@ -320,6 +383,11 @@ public sealed class AirTouchServer : IDisposable
 
         transfer?.Abort("服务停止");
 
+        // Stop() 先把 _client 清空再关 socket，所以那条 socket 的 OnClose 再也认不出自己是「当前
+        // 会话」，HandleDisconnected 的释放分支不会执行。会话在这里结束，鼠标键也就在这里松开。
+        _mouse.ReleaseAllButtons();
+        _zoom.ReleaseAll();
+
         _watchdog?.Dispose();
         _watchdog = null;
 
@@ -367,6 +435,10 @@ public sealed class AirTouchServer : IDisposable
         }
 
         transfer?.Abort("安全状态重置");
+
+        // 同样地：这里已经清掉了 _client，被关掉的 socket 走不到 HandleDisconnected 的释放分支。
+        _mouse.ReleaseAllButtons();
+        _zoom.ReleaseAll();
 
         try
         {
@@ -434,6 +506,11 @@ public sealed class AirTouchServer : IDisposable
         {
             return;
         }
+
+        // 这条路径也先清空 _client 再关 socket，所以松开鼠标键必须在这里做：被撤销信任的手机如果
+        // 正按着左键，它自己的 OnClose 已经不可能被认成「当前会话」了。
+        _mouse.ReleaseAllButtons();
+        _zoom.ReleaseAll();
 
         TrySend(client, Protocol.BuildError("trust_revoked", message));
         _ = Task.Delay(200).ContinueWith(_ => TryClose(client, 1008), TaskScheduler.Default);
@@ -705,6 +782,16 @@ public sealed class AirTouchServer : IDisposable
                 _log.Warn($"连接结束，已释放 {released} 个仍按下的按键");
             }
 
+            // Same hazard for the mouse (§2.1): the phone can be locked, killed or lose Wi-Fi in the
+            // middle of a drag (button down, move frames in flight). Nobody is left to send the matching
+            // release, so the left button would stay physically down and the desktop would drag-select
+            // forever. This is the one place that cannot be skipped, so it runs on every disconnect.
+            _mouse.ReleaseAllButtons();
+
+            // 同一条道理对捏合也成立：手势正做到一半（触控后端有两个按着的虚拟触点，回退后端可能刚
+            // 缓存了 Ctrl）时断线，没有人会再发 up。
+            _zoom.ReleaseAll();
+
             _guard.MarkDisconnected(address);
             RaiseStatusChanged();
         }
@@ -751,13 +838,60 @@ public sealed class AirTouchServer : IDisposable
                 Interlocked.Increment(ref _clickCommands);
                 break;
 
+            case MessageKind.Button:
+                // 一次状态变化一次注入（docs/PROTOCOL.md §2.1）：按下之后就是一串 move 帧 —— 那正是
+                // 拖拽；抬起由手机端负责发，服务端只做幂等记账（重复按下/空抬起都是空操作）。
+                _mouse.Button(command.Button, command.ButtonDown);
+                break;
+
             case MessageKind.Scroll:
-                _mouse.Scroll(command.Amount);
+                // delta 存在时优先：它是原生滚轮单位，可以远小于 120（Windows 会替应用累加），横向走
+                // MOUSEEVENTF_HWHEEL。老客户端只发 amount，这里换算成 amount * 120，与旧实现注入的
+                // 是完全相同的一个滚轮事件。
+                _mouse.Scroll(
+                    command.ScrollDelta ?? command.Amount * Win32MouseController.WheelDelta,
+                    command.ScrollAxis);
                 Interlocked.Increment(ref _scrollCommands);
+                break;
+
+            case MessageKind.Touch:
+                // 双指捏合的几何流（docs/PROTOCOL.md §2.1）：客户端描述「两指间距相对开始时是几倍」，
+                // 走触控注入还是 Ctrl+滚轮由服务端决定，线上格式两边完全一样。
+                switch (command.TouchPhase)
+                {
+                    case TouchPhase.Down:
+                        _zoom.TouchBegin();
+                        break;
+
+                    case TouchPhase.Move:
+                        _zoom.TouchMove(command.Scale, command.Dx, command.Dy);
+                        break;
+
+                    case TouchPhase.Up:
+                        _zoom.TouchEnd();
+                        break;
+                }
+
+                Interlocked.Increment(ref _touchCommands);
+                break;
+
+            case MessageKind.ZoomMode:
+                // 偏好，不是命令：native 在本机没有触控栈时照样回退到滚轮，但会如实告诉手机
+                // available=false（§2.1）。SetZoomMode 内部负责「变了就由事件推、没变也立刻回一帧」。
+                SetZoomMode(command.ZoomPreference ?? ZoomMode.Auto);
+                _log.Info($"手机端设置缩放偏好：{(command.ZoomPreference ?? ZoomMode.Auto).ToWire()}");
+                break;
+
+            case MessageKind.ZoomProbe:
+                // 手机点「重新检测」：立刻重新探测 SM_MAXIMUMTOUCHES。刚插上外接触控屏、或刚在系统里
+                // 启用触摸设备之后，这条帧就是「不重启服务端、不断开连接」地热切换到 InjectTouchInput
+                // 的唯一入口。
+                RefreshZoomCapability();
                 break;
 
             case MessageKind.Reset:
                 _mouse.ResetToCenter();
+                _zoom.ReleaseAll();
                 Interlocked.Increment(ref _resetCommands);
                 break;
 
@@ -1001,6 +1135,11 @@ public sealed class AirTouchServer : IDisposable
 
         if (replaced is not null)
         {
+            // 旧 socket 的会话到此结束：手机在拖拽中途换了 Wi-Fi、重连上来时，旧连接上那个「按下」
+            // 永远不会再配到抬起，而它的 OnClose 已经不可能被认成「当前会话」（_client 已指向新
+            // socket）。新会话要拖拽会自己重新按下，所以这里先松手是安全的。
+            _mouse.ReleaseAllButtons();
+            _zoom.ReleaseAll();
             _log.Info("同一台设备建立了新会话，正在关闭旧连接");
             TrySend(replaced, Protocol.BuildError("replaced", "同一设备已在新的连接上恢复会话"));
             _ = Task.Delay(150).ContinueWith(_ => TryClose(replaced, 1001), TaskScheduler.Default);
@@ -1013,7 +1152,12 @@ public sealed class AirTouchServer : IDisposable
             _identity.Id,
             ScreenInfo.PrimaryScreenRefreshHz(),
             keyId,
-            wasPairing ? "pair" : "resume"));
+            wasPairing ? "pair" : "resume",
+            _virtualTouch.Status));
+
+        // welcome 里已经带了同样的快照字段，这一帧是刻意的冗余：手机重连后不需要「等下一次变化」才知道
+        // 自己是原生触控还是滚轮，第二条帧就是权威值。
+        TrySend(socket, Protocol.BuildZoomStatus(_virtualTouch.Status));
 
         RaiseStatusChanged();
     }
@@ -1288,6 +1432,48 @@ public sealed class AirTouchServer : IDisposable
         {
             // ignored
         }
+    }
+
+    /// <summary>
+    /// Pushes the effective zoom state to the connected phone. Three occasions (docs/PROTOCOL.md §2.1):
+    /// right after <c>welcome</c>, whenever the status changes (phone preference, window preference,
+    /// window re-detect, successful or failed hot switch), and as the acknowledgement of
+    /// <c>zoom_mode</c>/<c>zoom_probe</c>.
+    /// </summary>
+    private void PushZoomStatus()
+    {
+        IWebSocketConnection? client;
+        lock (_gate)
+        {
+            client = _client;
+        }
+
+        if (client is not null)
+        {
+            TrySend(client, Protocol.BuildZoomStatus(_virtualTouch.Status));
+        }
+    }
+
+    /// <summary>
+    /// Manager status changed — including changes the phone cannot see coming, such as the window
+    /// re-detecting the machine or a touchscreen being plugged in. The phone's switch has to follow live.
+    /// </summary>
+    private void OnVirtualTouchStatusChanged(object? sender, ZoomStatus status)
+    {
+        // 事件先于这里被控制器收到（构造顺序），所以推给手机时手势已经被收干净了 —— 手机收到
+        // zoom_status 之后不该再发 move，发了也只会被忽略，要重新 down。
+        IWebSocketConnection? client;
+        lock (_gate)
+        {
+            client = _client;
+        }
+
+        if (client is not null)
+        {
+            TrySend(client, Protocol.BuildZoomStatus(status));
+        }
+
+        RaiseStatusChanged();
     }
 
     private void RaiseStatusChanged()

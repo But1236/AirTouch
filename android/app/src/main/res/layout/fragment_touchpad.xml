@@ -17,7 +17,6 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
-
     <LinearLayout
         android:id="@+id/sensitivity_row"
         android:layout_width="0dp"
@@ -25,7 +24,7 @@
         android:layout_marginTop="@dimen/at_space_s"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        app:layout_constraintBottom_toTopOf="@id/touchpad_hint"
+        app:layout_constraintBottom_toTopOf="@id/zoom_row"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent">
 
@@ -49,6 +48,56 @@
             android:layout_height="wrap_content"
             android:minWidth="48dp"
             tools:text="1.0x" />
+    </LinearLayout>
+
+    <!--
+      原生触控缩放：开关控制电脑端的缩放后端，状态文字实时显示电脑端**实际**
+      在用什么（原生触控注入 / Ctrl+滚轮兼容），右边「重新检测」让用户插上触控设备后当场重新探测
+      —— 服务端会热切换，不用重启服务端，也不用断开手机。
+    -->
+    <LinearLayout
+        android:id="@+id/zoom_row"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/at_space_s"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        app:layout_constraintBottom_toTopOf="@id/touchpad_hint"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                style="@style/Widget.AirTouch.Label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/touchpad_zoom_native" />
+
+            <TextView
+                android:id="@+id/zoom_status"
+                style="@style/Widget.AirTouch.Label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/touchpad_zoom_status_unknown" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/zoom_refresh"
+            style="@style/Widget.AirTouch.KeyBarButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/touchpad_zoom_refresh" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/zoom_native_switch"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/at_space_xs" />
     </LinearLayout>
 
     <TextView

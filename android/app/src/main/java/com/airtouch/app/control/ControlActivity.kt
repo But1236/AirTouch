@@ -46,6 +46,7 @@ import com.airtouch.app.net.PairingUri
 import com.airtouch.app.net.PinnedTrust
 import com.airtouch.app.net.Protocol
 import com.airtouch.app.net.WifiLatencyLock
+import com.airtouch.app.net.ZoomStatus
 import com.airtouch.app.settings.SettingsStore
 import com.google.android.material.tabs.TabLayout
 
@@ -413,9 +414,55 @@ class ControlActivity : AppCompatActivity(), AirTouchClient.Listener, ControlBri
         client.sendClick(button)
     }
 
-    override fun sendScroll(amount: Int) {
+    /** 滚轮（整格）：陀螺仪滚轮模式用 */
+    override fun sendScrollNotches(amount: Int) {
         if (client.state != AirTouchClient.State.CONNECTED) return
         client.sendScroll(amount)
+    }
+
+    /** 高精度滚轮：触摸板两指滑动用 */
+    override fun sendScroll(delta: Int, horizontal: Boolean) {
+        if (client.state != AirTouchClient.State.CONNECTED) return
+        client.sendScrollDelta(delta, horizontal)
+    }
+
+    /**
+     * 双指捏合/张开（协议 §2.1 的 `touch`）：只转发几何，用哪个 Windows API 由服务端决定。
+     *
+     * `up` 即使发失败也不要紧（服务端在断线时会松开接触点/Ctrl），但 `down/move` 失败就没意义了，
+     * 所以这里静默丢弃、不弹提示——捏合过程中每秒几十帧，Toast 会毁掉体验。
+     */
+    override fun sendPinch(phase: String, scale: Double, dx: Int, dy: Int) {
+        if (client.state != AirTouchClient.State.CONNECTED) return
+        client.sendTouch(phase, scale, dx, dy)
+    }
+
+    /**
+     * 设置电脑端的缩放偏好（协议 §2.1 的 `zoom_mode`）。
+     *
+     * 这是**电脑端**的开关：手机只提要求，电脑端按自己的触摸栈能力决定最终走哪个 API，
+     * 结果通过 `zoom_status` 回来（见 [onZoomStatus]）。
+     */
+    override fun sendZoomMode(mode: String) {
+        if (client.state != AirTouchClient.State.CONNECTED) return
+        client.sendZoomMode(mode)
+    }
+
+    /** 请电脑端立刻重新探测触控能力（协议 §2.1 的 `zoom_probe`）：刚插上触控设备后用 */
+    override fun sendZoomProbe() {
+        if (client.state != AirTouchClient.State.CONNECTED) return
+        client.sendZoomProbe()
+    }
+
+    /**
+     * 鼠标按键的按下 / 抬起（协议 §2.1 的 `button`），触摸板的拖拽手势用它。
+     *
+     * 未连接时**返回失败**：调用方（触摸板）据此取消拖拽状态。这里不弹提示，理由与 [sendKey]
+     * 相同（拖拽过程中每秒会发多次），但「未连接」这件事界面上已经有常驻提示。
+     */
+    override fun sendButton(button: String, down: Boolean): Boolean {
+        if (client.state != AirTouchClient.State.CONNECTED) return false
+        return client.sendButton(button, down)
     }
 
     override fun sendReset() {
@@ -676,6 +723,8 @@ class ControlActivity : AppCompatActivity(), AirTouchClient.Listener, ControlBri
         // 电脑端收不到抬起事件就会一直按着它。同时清掉键帽的「按下高亮」。
         keyboardOverlay.keyboardViewFullscreen.cancelGesture()
         fullscreenHandler.releaseAll()
+        // 微型触控板如果正拖着东西，左键也要跟着松开（它与全屏键盘同生共死）
+        keyboardOverlay.miniTouchpadView.cancelGesture()
 
         keyboardOverlay.root.visibility = View.GONE
         applyImmersiveMode(false)
@@ -709,6 +758,8 @@ class ControlActivity : AppCompatActivity(), AirTouchClient.Listener, ControlBri
 
     private fun closeMiniTouchpad() {
         if (!miniTouchpadOpen && keyboardOverlay.miniTouchpadBubble.visibility == View.GONE) return
+        // 收气泡时如果手指还按在里面（正在拖东西），补一次左键抬起：视图变 GONE 后不一定还收得到 UP
+        keyboardOverlay.miniTouchpadView.cancelGesture()
         miniTouchpadOpen = false
         keyboardOverlay.miniTouchpadBubble.visibility = View.GONE
         keyboardOverlay.buttonMiniTouchpad.active = false
@@ -821,8 +872,20 @@ class ControlActivity : AppCompatActivity(), AirTouchClient.Listener, ControlBri
             sendClick(button)
         }
 
-        override fun onScroll(amount: Int) {
-            sendScroll(amount)
+        override fun onScroll(delta: Int, horizontal: Boolean) {
+            sendScroll(delta, horizontal)
+        }
+
+        // 微型触控板与大触摸板共用同一套手势，所以拖拽、缩放、三指手势也一并支持
+        override fun onButton(button: String, down: Boolean): Boolean =
+            sendButton(button, down)
+
+        override fun onPinch(phase: String, scale: Double, dx: Int, dy: Int) {
+            sendPinch(phase, scale, dx, dy)
+        }
+
+        override fun onThreeFinger(action: String) {
+            sendThreeFinger(action)
         }
     }
 
@@ -901,6 +964,10 @@ class ControlActivity : AppCompatActivity(), AirTouchClient.Listener, ControlBri
             // 认证通过后再上报设备信息（协议 §2.1 的 hello）
             client.sendHello(deviceName, AppVersion.of(this))
 
+            // 用户拨过「原生丝滑缩放」开关就把偏好重发给电脑端：这是**电脑端**的设置，
+            // 服务端重启或换台电脑后不会替我们记着。没拨过（null）就不发，让电脑端保持自己的 auto 判断。
+            settings.zoomPreference?.let { client.sendZoomMode(it) }
+
             if (info.authMode == "resume") {
                 showFileStatus(getString(R.string.control_auth_mode_resume))
             } else if (info.authMode == "pair") {
@@ -972,6 +1039,16 @@ class ControlActivity : AppCompatActivity(), AirTouchClient.Listener, ControlBri
 
     override fun onPong() {
         // 心跳应答，无需界面反馈
+    }
+
+    /**
+     * 电脑端缩放后端状态（协议 §2.2 的 `zoom_status`）。
+     *
+     * 只做一件事：转达给触摸板页的状态指示器 —— 那是用户确认「电脑端实际在用哪个后端」
+     * 的唯一地方，所以这里不做任何拦截或缓存丢失。
+     */
+    override fun onZoomStatus(status: ZoomStatus) {
+        runOnUiThread { touchpadFragment?.onZoomStatusChanged(status) }
     }
 
     override fun onUnknownText(type: String, raw: String) {

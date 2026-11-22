@@ -17,7 +17,9 @@ object Protocol {
     // ---- 客户端 → 服务端 的 type 常量 ----
     const val TYPE_MOVE = "move"
     const val TYPE_CLICK = "click"
+    const val TYPE_BUTTON = "button"
     const val TYPE_SCROLL = "scroll"
+    const val TYPE_TOUCH = "touch"
     const val TYPE_RESET = "reset"
     const val TYPE_KEY = "key"
     const val TYPE_TEXT = "text"
@@ -25,6 +27,18 @@ object Protocol {
     const val TYPE_FILE_END = "file_end"
     const val TYPE_HELLO = "hello"
     const val TYPE_PING = "ping"
+
+    /**
+     * 设置电脑端的缩放偏好（协议 §2.1）：`native` = 优先原生触控注入，`wheel` = 强制滚轮回退，
+     * `auto` = 由电脑端自己挑（缺省）。只影响电脑端用哪个 API，不影响线上的 `touch` 几何流。
+     */
+    const val TYPE_ZOOM_MODE = "zoom_mode"
+
+    /**
+     * 请电脑端**立刻重新探测**触控能力（协议 §2.1）：用户点「重新检测」时发（例如刚插上 USB 触摸屏）。
+     * 探测到 `SM_MAXIMUMTOUCHES > 0` 后电脑端会热切换到 `InjectTouchInput`，不用重启也不用重连。
+     */
+    const val TYPE_ZOOM_PROBE = "zoom_probe"
 
     /** 协议 §1.2：认证三步握手 */
     const val TYPE_AUTH_REQ = "auth_req"
@@ -35,6 +49,12 @@ object Protocol {
     const val TYPE_FILE_ACK = "file_ack"
     const val TYPE_ERROR = "error"
     const val TYPE_PONG = "pong"
+
+    /**
+     * 电脑端**当前实际生效**的缩放后端（协议 §2.2）。设置页的状态指示器就靠它：
+     * `native_touch` = 已激活原生触控栈，`ctrl_wheel_fallback` = 滚轮兼容模式。
+     */
+    const val TYPE_ZOOM_STATUS = "zoom_status"
     const val TYPE_FILE_HEADER_FROM_SERVER = "file_header"
     const val TYPE_FILE_END_FROM_SERVER = "file_end"
 
@@ -44,6 +64,10 @@ object Protocol {
     const val FIELD_DY = "dy"
     const val FIELD_BUTTON = "button"
     const val FIELD_AMOUNT = "amount"
+    const val FIELD_DELTA = "delta"
+    const val FIELD_AXIS = "axis"
+    const val FIELD_PHASE = "phase"
+    const val FIELD_SCALE = "scale"
     const val FIELD_VK = "vk"
     const val FIELD_DOWN = "down"
     const val FIELD_EXT = "ext"
@@ -53,6 +77,27 @@ object Protocol {
     const val FIELD_FILE_ID = "fileId"
     const val FIELD_DEVICE_NAME = "deviceName"
     const val FIELD_APP_VERSION = "appVersion"
+
+    // ---- 缩放后端状态（zoom_status 帧）与 welcome 里的初始快照 ----
+    const val FIELD_MODE = "mode"
+    const val FIELD_AVAILABLE = "available"
+    const val FIELD_REASON = "reason"
+    const val FIELD_PREFERENCE = "preference"
+    const val FIELD_MAX_TOUCHES = "maxTouches"
+    const val FIELD_DIGITIZER = "digitizer"
+    const val FIELD_ZOOM_MODE = "zoomMode"
+    const val FIELD_ZOOM_AVAILABLE = "zoomAvailable"
+    const val FIELD_ZOOM_REASON = "zoomReason"
+    const val FIELD_ZOOM_PREFERENCE = "zoomPreference"
+
+    /** 电脑端当前生效的后端（zoom_status 的 mode） */
+    const val ZOOM_BACKEND_NATIVE = "native_touch"
+    const val ZOOM_BACKEND_WHEEL = "ctrl_wheel_fallback"
+
+    /** 缩放偏好（zoom_mode 的 mode / zoom_status 的 preference） */
+    const val ZOOM_PREF_AUTO = "auto"
+    const val ZOOM_PREF_NATIVE = "native"
+    const val ZOOM_PREF_WHEEL = "wheel"
 
     // ---- 认证字段 ----
     const val FIELD_AUTH_VERSION = "auth_v"
@@ -65,11 +110,30 @@ object Protocol {
     const val BUTTON_LEFT = "left"
     const val BUTTON_RIGHT = "right"
 
+    /** 滚轮轴：`axis` 缺省为纵向 */
+    const val AXIS_VERTICAL = "v"
+    const val AXIS_HORIZONTAL = "h"
+
+    /** touch 帧的三个阶段 */
+    const val PHASE_DOWN = "down"
+    const val PHASE_MOVE = "move"
+    const val PHASE_UP = "up"
+
+    /** 一格滚轮 = 120 个原生滚轮单位（Windows 的 WHEEL_DELTA）；delta 可以远小于它 */
+    const val SCROLL_UNITS_PER_NOTCH = 120
+
     /** 协议 §2.1：dx/dy 被服务端截断到 [-4096, 4096]，客户端主动先截断 */
     const val MOVE_LIMIT = 4096
 
     /** 协议 §2.1：amount 截断到 [-120, 120] */
     const val SCROLL_LIMIT = 120
+
+    /** 协议 §2.1：delta（原生滚轮单位）截断到 [-1200, 1200]，也就是一次最多十格 */
+    const val SCROLL_DELTA_LIMIT = 1200
+
+    /** 协议 §2.1：touch 帧的 scale（间距倍数）截断到 [0.05, 20] */
+    const val SCALE_MIN = 0.05
+    const val SCALE_MAX = 20.0
 
     /** 协议 §2.6：vk 是 Win32 虚拟键码，0 表示「没有按键」，超过 255 被截断 */
     const val MAX_VIRTUAL_KEY = 255
@@ -173,11 +237,99 @@ object Protocol {
         return o.toString()
     }
 
+    /**
+     * 鼠标按键的一次**状态变化**（协议 §2.1 的 `button`）。
+     *
+     * 「按下」和「抬起」必须能分两次发出，否则做不了拖拽：拖一个文件要先把左键按住，中间发一串
+     * `move`，最后才松开。`click` 办不到这件事——它把按下与抬起放在同一次注入里，中间插不进任何移动。
+     *
+     * **抬起是调用方的责任**：电脑侧只在连接断开或收到 `reset` 时代为释放所有按键。手机上任何
+     * 「拖到一半被打断」的路径（手指抬起、切页、onPause、断线）都必须补一次 `down = false`。
+     *
+     * @param button "left" / "right"（其它值一律按 left 处理，与 `click` 一致）
+     * @param down true = 按下，false = 抬起
+     */
+    fun buildButton(button: String?, down: Boolean): String {
+        val o = JSONObject()
+        o.put(FIELD_TYPE, TYPE_BUTTON)
+        o.put(FIELD_BUTTON, normalizeButton(button))
+        o.put(FIELD_DOWN, down)
+        return o.toString()
+    }
+
     fun buildScroll(amount: Number?): String {
         val a = clamp(safeInt(amount), -SCROLL_LIMIT, SCROLL_LIMIT)
         val o = JSONObject()
         o.put(FIELD_TYPE, TYPE_SCROLL)
         o.put(FIELD_AMOUNT, a)
+        return o.toString()
+    }
+
+    /**
+     * **高精度滚轮**（协议 §2.1 的 `delta` / `axis`）：delta 是原生滚轮单位（120 = 一格）。
+     *
+     * 为什么不用 [buildScroll] 的「整格」形式：一格 120 单位在 Windows 上是「一格就是一大跳」，
+     * 触控板要的是像素级平滑滚动，所以发 15 这种小增量，由应用自己累加。两指横滑走
+     * `MOUSEEVENTF_HWHEEL`（`axis:"h"`），纵向留空。
+     *
+     * @param delta 原生滚轮单位，正数上滚 / 右滚，负数下滚 / 左滚
+     * @param horizontal true = 横向滚动
+     */
+    fun buildScrollDelta(delta: Int, horizontal: Boolean = false): String {
+        val o = JSONObject()
+        o.put(FIELD_TYPE, TYPE_SCROLL)
+        o.put(FIELD_DELTA, clamp(delta, -SCROLL_DELTA_LIMIT, SCROLL_DELTA_LIMIT))
+        if (horizontal) o.put(FIELD_AXIS, AXIS_HORIZONTAL)
+        return o.toString()
+    }
+
+    /**
+     * **双指捏合/张开的几何流**（协议 §2.1 的 `touch`）。
+     *
+     * 客户端只报「两指间距是手势开始时的几倍」和「手势中心移动了多少」，**具体用哪个 Windows API
+     * 去实现缩放由服务端决定**：有触摸输入栈的机器上走 `InjectTouchInput` 的真双指触摸（应用得到的是
+     * 和真实触摸屏一样的无级缩放），没有触摸栈的机器上服务端自动回退到 Ctrl + 高精度滚轮。
+     * 这样分工的好处是：手机端不需要知道对面有没有触摸屏，协议也不用为两种实现各来一套。
+     *
+     * @param phase [PHASE_DOWN] / [PHASE_MOVE] / [PHASE_UP]
+     * @param scale 当前两指间距 ÷ 手势开始时间距（相对值，跨设备成立）；非 move 阶段无意义
+     * @param dx 手势中心相对上一帧的横向移动（屏幕像素）
+     * @param dy 手势中心相对上一帧的纵向移动（屏幕像素）
+     */
+    fun buildTouch(phase: String, scale: Double, dx: Int, dy: Int): String {
+        val o = JSONObject()
+        o.put(FIELD_TYPE, TYPE_TOUCH)
+        o.put(FIELD_PHASE, phase)
+        if (phase == PHASE_MOVE) {
+            o.put(FIELD_SCALE, scale.coerceIn(SCALE_MIN, SCALE_MAX))
+            o.put(FIELD_DX, clamp(dx, -MOVE_LIMIT, MOVE_LIMIT))
+            o.put(FIELD_DY, clamp(dy, -MOVE_LIMIT, MOVE_LIMIT))
+        }
+        return o.toString()
+    }
+
+    /**
+     * 设置电脑端的缩放偏好（协议 §2.1 的 `zoom_mode`）。
+     *
+     * 只传 [ZOOM_PREF_NATIVE] / [ZOOM_PREF_WHEEL] / [ZOOM_PREF_AUTO] 三个值；其它值原样发出去
+     * 也会被电脑端整帧忽略，但客户端不该制造这种东西，所以这里做一次白名单兜底。
+     */
+    fun buildZoomMode(mode: String): String {
+        val m = when (mode) {
+            ZOOM_PREF_NATIVE -> ZOOM_PREF_NATIVE
+            ZOOM_PREF_WHEEL -> ZOOM_PREF_WHEEL
+            else -> ZOOM_PREF_AUTO
+        }
+        val o = JSONObject()
+        o.put(FIELD_TYPE, TYPE_ZOOM_MODE)
+        o.put(FIELD_MODE, m)
+        return o.toString()
+    }
+
+    /** 请求电脑端立刻重新探测触控能力（协议 §2.1 的 `zoom_probe`），无字段 */
+    fun buildZoomProbe(): String {
+        val o = JSONObject()
+        o.put(FIELD_TYPE, TYPE_ZOOM_PROBE)
         return o.toString()
     }
 

@@ -96,6 +96,14 @@ class AirTouchClient(
         /** 收到 pong */
         fun onPong()
 
+        /**
+         * 电脑端缩放后端状态（协议 §2.2 的 `zoom_status`）：握手后立刻一帧，之后每次状态变化
+         * （用户点刷新检测、电脑端改偏好、热切换成功）都会再推一帧。
+         *
+         * 默认空实现，是为了不让「只想实现几个回调」的调用方被迫写一个空方法。
+         */
+        fun onZoomStatus(status: ZoomStatus) {}
+
         /** 未知 type：忽略即可，这里单独回调便于调试（协议 §2.3） */
         fun onUnknownText(type: String, raw: String)
 
@@ -326,7 +334,46 @@ class AirTouchClient(
 
     fun sendClick(button: String): Boolean = sendText(Protocol.buildClick(button))
 
+    /**
+     * 鼠标按键的一次状态变化（协议 §2.1 的 `button`），触摸板用它实现「双击后按住拖拽」。
+     *
+     * 与 `click` 的区别只有一个：按下与抬起是两次独立的帧，中间可以夹任意多条 [sendMove]。
+     * 连接没建立时返回 false，调用方**必须**据此放弃后续的拖拽状态，否则手指抬起了、
+     * 电脑上的左键还按着。
+     */
+    fun sendButton(button: String, down: Boolean): Boolean =
+        sendText(Protocol.buildButton(button, down))
+
+    /** 滚轮（整格，120 单位/格）：陀螺仪滚轮模式用，一次一格 */
     fun sendScroll(amount: Int): Boolean = sendText(Protocol.buildScroll(amount))
+
+    /**
+     * **高精度滚轮**（协议 §2.1 的 `delta` / `axis`）：触摸板两指滑动用。
+     *
+     * delta 是原生滚轮单位（120 = 一格），触摸板发的是 15 这种小增量，应用会自己累加，
+     * 于是滚动是像素级平滑的而不是一格一跳。
+     */
+    fun sendScrollDelta(delta: Int, horizontal: Boolean): Boolean =
+        sendText(Protocol.buildScrollDelta(delta, horizontal))
+
+    /**
+     * **双指捏合/张开**（协议 §2.1 的 `touch`）：只报几何，由服务端挑 Windows API
+     * （有触摸栈走 `InjectTouchInput`，否则回退 Ctrl + 高精度滚轮）。
+     */
+    fun sendTouch(phase: String, scale: Double, dx: Int, dy: Int): Boolean =
+        sendText(Protocol.buildTouch(phase, scale, dx, dy))
+
+    /**
+     * 设置电脑端的缩放偏好（协议 §2.1 的 `zoom_mode`）：`native` = 优先原生触控注入，
+     * `wheel` = 强制 Ctrl+滚轮回退（即使电脑有触摸屏）。设置页开关用它。
+     */
+    fun sendZoomMode(mode: String): Boolean = sendText(Protocol.buildZoomMode(mode))
+
+    /**
+     * 请电脑端立刻重新探测触控能力（协议 §2.1 的 `zoom_probe`）：用户刚插上触控设备后
+     * 点「刷新检测」。结果通过 [Listener.onZoomStatus] 回来。
+     */
+    fun sendZoomProbe(): Boolean = sendText(Protocol.buildZoomProbe())
 
     fun sendReset(): Boolean = sendText(Protocol.buildReset())
 
@@ -612,6 +659,8 @@ class AirTouchClient(
 
             Protocol.TYPE_PONG -> listener.onPong()
 
+            Protocol.TYPE_ZOOM_STATUS -> listener.onZoomStatus(ZoomStatus.fromStatus(o))
+
             else -> listener.onUnknownText(type, text)
         }
     }
@@ -691,6 +740,10 @@ class AirTouchClient(
 
         setState(State.CONNECTED)
         listener.onWelcome(info)
+
+        // welcome 里带了缩放后端的初始快照（老服务端没有这些字段）：有就先报一次，
+        // 让设置页在收到第一帧 zoom_status 之前也是对的。
+        ZoomStatus.fromWelcome(o)?.let { listener.onZoomStatus(it) }
     }
 
     private fun startReceive(o: JSONObject) {

@@ -51,6 +51,16 @@ android/captures/
 # android/app/src/main/assets/pinyin_dict.txt 是提交的，所以构建和运行期都不需要联网。
 tools/pinyin-source/
 
+# ---- local UI/self-test scratch dirs (screenshots, temp certs, reports) ----
+.final*/
+.fix-*/
+.uidesign*/
+.clean-check/
+.flat-check/
+.soft-*/
+.verify-*/
+.wpf-*/
+
 # ---- misc ----
 *.swp
 Thumbs.db

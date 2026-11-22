@@ -1,3 +1,4 @@
+using System.Drawing;
 using QRCoder;
 
 namespace AirTouch.Core;
@@ -52,5 +53,31 @@ public static class QrCodeRenderer
 
         var code = new PngByteQRCode(data);
         return code.GetGraphic(pixelsPerModule);
+    }
+
+    /// <summary>
+    /// Renders with explicit module/background colors, e.g. accent-colored modules on black for the
+    /// dark theme. The quiet zone is drawn by the window's padding, so it is not baked into the PNG.
+    /// </summary>
+    public static byte[] RenderPngForWidth(string payload, int maxPixels,
+        out int pixelsPerModule, out int moduleCount, string moduleColorHex, string backgroundHex)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            throw new ArgumentException("QR 内容不能为空", nameof(payload));
+        }
+
+        using var generator = new QRCodeGenerator();
+        using var data = generator.CreateQrCode(payload, Level);
+
+        moduleCount = data.ModuleMatrix.Count;
+        pixelsPerModule = Math.Clamp(maxPixels / Math.Max(1, moduleCount), 2, 24);
+
+        var code = new PngByteQRCode(data);
+        return code.GetGraphic(
+            pixelsPerModule,
+            ColorTranslator.FromHtml(moduleColorHex),
+            ColorTranslator.FromHtml(backgroundHex),
+            drawQuietZones: true);
     }
 }

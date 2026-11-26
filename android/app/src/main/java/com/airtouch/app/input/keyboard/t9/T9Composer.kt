@@ -88,8 +88,18 @@ class T9Composer {
         val text = candidates.getOrNull(index)?.text
         if (text.isNullOrEmpty()) return null
         digits = ""
-        candidates = emptyList()
+        // 上屏之后**接着给联想**：以刚上屏内容的结尾为上下文列常用后续词（`你好` → 你好吗…；
+        // 没有两字上下文就退回最后一个字，`你` → 你好/你们/你的…）。
+        // 候选条只认 [candidates]，所以联想不需要改任何界面代码就能显示出来。
+        candidates = predict(text)
         return text
+    }
+
+    /** 联想候选：[text] 是刚上屏的内容（一个字或一个词） */
+    private fun predict(text: String): List<PinyinEngine.Candidate> {
+        val dict = dictionary ?: return emptyList()
+        return dict.predictions(text, PREDICT_LIMIT)
+            .map { PinyinEngine.Candidate(it, PinyinEngine.Kind.WORD) }
     }
 
     private fun refresh() {        val dict = dictionary
@@ -98,5 +108,10 @@ class T9Composer {
         } else {
             PinyinEngine.candidates(dict, digits)
         }
+    }
+
+    private companion object {
+        /** 联想一次最多给几个：比拼音候选少一些，避免上屏后候选条反而变长 */
+        const val PREDICT_LIMIT = 12
     }
 }

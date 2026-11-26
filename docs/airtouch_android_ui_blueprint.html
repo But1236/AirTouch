@@ -1,0 +1,1513 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light" data-accent="yellow">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AirTouch Android UI Blueprint — Tactile Neumorphism + Flat Keyboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- =========================================================================
+       AGENT DESIGN TOKENS & COMPOSE MAPPING SPECIFICATION
+       =========================================================================
+       Style Strategy:
+       1. Home / Settings / Air Mouse / Touchpad / Sliders / Toggles:
+          "Precision Micro-Neumorphism (Tactile Neumorphism)"
+          - Outer Concave Wells (Inner Shadows) -> Compose: NeumorphicWell()
+          - Inner Convex Curved-Surface Buttons -> Compose: TactileSurfaceButton()
+          - 1dp crisp subtle border for high-contrast blind operation
+          - Pressed state transitions smoothly from convex to concave + HapticFeedback
+       2. Portrait Keyboard & Landscape Fullscreen Keyboard:
+          "Pure Flat Design"
+          - Zero drop shadows on keys -> Compose: FlatKeycap()
+          - Uniform 6dp corner radius, high-contrast flat fills
+          - Sticky Keys (Ctrl/Shift/Alt/Win) highlight in solid Accent Color
+       ========================================================================= -->
+  <style>
+    :root {
+      /* --- LIGHT MODE TOKENS (Cool Off-White Base -> Compose: LightColorScheme) --- */
+      --bg-canvas: #E2E7EE;
+      --bg-base: #EDF1F5;
+      --bg-surface-top: #F6F8FB;
+      --bg-surface-bottom: #E4E9F0;
+      --bg-well: #E4E9F0;
+      --shadow-light: #FFFFFF;
+      --shadow-dark: #C8D1DC;
+      --border-subtle: rgba(255, 255, 255, 0.78);
+      --border-contrast: rgba(15, 23, 42, 0.08);
+      --text-primary: #181C24;
+      --text-secondary: #5B6678;
+      --text-muted: #8C97A8;
+      --dot-color: rgba(24, 28, 36, 0.24);
+
+      /* --- FLAT KEYBOARD TOKENS (Light) --- */
+      --kb-bg: #E3E8EF;
+      --kb-key-bg: #F6F8FB;
+      --kb-key-fn: #D9E0EA;
+      --kb-key-border: rgba(15, 23, 42, 0.09);
+      --kb-key-pressed: #CFD8E3;
+
+      /* --- GEOMETRY TOKENS --- */
+      --radius-phone: 38px;
+      --radius-card: 22px;
+      --radius-btn: 16px;
+      --radius-pill: 999px;
+      --radius-key: 6px;
+
+      /* --- DYNAMIC ACCENT TOKENS (Default: Bright Yellow #F5B800) --- */
+      --accent: #F5B800;
+      --accent-light: #FFD447;
+      --accent-dark: #D69E00;
+      --accent-glow: rgba(245, 184, 0, 0.35);
+      --accent-text: #14171D;
+    }
+
+    [data-theme="dark"] {
+      /* --- DARK MODE TOKENS (Deep Slate Base -> Compose: DarkColorScheme) --- */
+      --bg-canvas: #121418;
+      --bg-base: #1C1F24;
+      --bg-surface-top: #23272E;
+      --bg-surface-bottom: #181B20;
+      --bg-well: #15181C;
+      --shadow-light: #272B33;
+      --shadow-dark: #0E1013;
+      --border-subtle: rgba(255, 255, 255, 0.07);
+      --border-contrast: rgba(255, 255, 255, 0.09);
+      --text-primary: #F1F5F9;
+      --text-secondary: #9CA6B8;
+      --text-muted: #646E80;
+      --dot-color: rgba(241, 245, 249, 0.22);
+
+      /* --- FLAT KEYBOARD TOKENS (Dark) --- */
+      --kb-bg: #14161A;
+      --kb-key-bg: #252A32;
+      --kb-key-fn: #1D2128;
+      --kb-key-border: rgba(255, 255, 255, 0.07);
+      --kb-key-pressed: #323945;
+    }
+
+    /* --- ACCENT PRESETS --- */
+    [data-accent="yellow"] {
+      --accent: #F5B800;
+      --accent-light: #FFD447;
+      --accent-dark: #D19A00;
+      --accent-glow: rgba(245, 184, 0, 0.38);
+      --accent-text: #14171D;
+    }
+    [data-accent="coral"] {
+      --accent: #F25C3B;
+      --accent-light: #FF7E61;
+      --accent-dark: #CC4123;
+      --accent-glow: rgba(242, 92, 59, 0.38);
+      --accent-text: #FFFFFF;
+    }
+    [data-accent="emerald"] {
+      --accent: #10B981;
+      --accent-light: #34D399;
+      --accent-dark: #059669;
+      --accent-glow: rgba(16, 185, 129, 0.38);
+      --accent-text: #FFFFFF;
+    }
+    [data-accent="blue"] {
+      --accent: #3B82F6;
+      --accent-light: #60A5FA;
+      --accent-dark: #2563EB;
+      --accent-glow: rgba(59, 130, 246, 0.38);
+      --accent-text: #FFFFFF;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--bg-canvas);
+      color: var(--text-primary);
+      transition: background-color 0.28s ease, color 0.28s ease;
+      margin: 0;
+      min-height: 100vh;
+    }
+
+    .font-mono-tech {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* =========================================================================
+       PRECISION MICRO-NEUMORPHISM PRIMITIVES
+       ========================================================================= */
+
+    /* 1. Phone Bezel & Screen Surface */
+    .phone-frame {
+      background: var(--bg-base);
+      border-radius: var(--radius-phone);
+      box-shadow:
+        18px 18px 40px var(--shadow-dark),
+        -14px -14px 32px var(--shadow-light),
+        inset 0 0 0 1.5px var(--border-subtle);
+      border: 1px solid var(--border-contrast);
+      position: relative;
+      overflow: hidden;
+      transition: background-color 0.28s ease, box-shadow 0.28s ease;
+      flex-shrink: 0;
+    }
+    .phone-portrait {
+      width: 360px;
+      height: 760px;
+    }
+    .phone-landscape {
+      width: 780px;
+      max-width: 100%;
+      height: 360px;
+    }
+
+    /* 2. NeumorphicWell (Concave Recess / Inner Shadow Container) */
+    .neu-well {
+      background: var(--bg-well);
+      box-shadow:
+        inset 4px 4px 9px var(--shadow-dark),
+        inset -4px -4px 9px var(--shadow-light),
+        0 1px 0 var(--border-subtle);
+      border: 1px solid var(--border-contrast);
+      transition: all 0.2s ease;
+    }
+
+    /* 3. TactileSurfaceButton (Convex Curved-Surface Button) */
+    .neu-btn {
+      background: linear-gradient(145deg, var(--bg-surface-top), var(--bg-surface-bottom));
+      box-shadow:
+        5px 5px 11px var(--shadow-dark),
+        -5px -5px 11px var(--shadow-light),
+        inset 1px 1px 1.5px var(--border-subtle);
+      border: 1px solid var(--border-contrast);
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: transform 0.12s ease, box-shadow 0.14s ease, background 0.2s ease, border-color 0.2s ease;
+      position: relative;
+    }
+    .neu-btn:active,
+    .neu-btn.is-pressed {
+      transform: scale(0.975);
+      background: var(--bg-well);
+      box-shadow:
+        inset 3px 3px 7px var(--shadow-dark),
+        inset -3px -3px 7px var(--shadow-light);
+    }
+
+    /* Active / Accent-Lit Tactile Button */
+    .neu-btn-accent {
+      background: linear-gradient(145deg, var(--accent-light), var(--accent-dark));
+      color: var(--accent-text);
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      box-shadow:
+        4px 4px 12px var(--accent-glow),
+        -3px -3px 8px var(--shadow-light),
+        inset 1px 1px 2px rgba(255, 255, 255, 0.45);
+    }
+    .neu-btn-accent:active,
+    .neu-btn-accent.is-pressed {
+      transform: scale(0.97);
+      background: linear-gradient(145deg, var(--accent-dark), var(--accent));
+      box-shadow:
+        inset 3px 3px 6px rgba(0, 0, 0, 0.25),
+        inset -2px -2px 5px rgba(255, 255, 255, 0.25);
+    }
+
+    /* Subtle Accent Ring for Active Neutral Button */
+    .neu-active-ring {
+      border-color: var(--accent) !important;
+      box-shadow:
+        inset 3px 3px 6px var(--shadow-dark),
+        inset -3px -3px 6px var(--shadow-light),
+        0 0 0 1.5px var(--accent-glow) !important;
+    }
+
+    /* 4. Curved 3D Tactile Toggle Switch (Inspired by micro-skeuomorphic slider) */
+    .tactile-switch {
+      width: 64px;
+      height: 34px;
+      border-radius: 999px;
+      padding: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      position: relative;
+    }
+    .tactile-switch-thumb {
+      width: 26px;
+      height: 26px;
+      border-radius: 999px;
+      background: linear-gradient(145deg, var(--bg-surface-top), var(--bg-surface-bottom));
+      box-shadow:
+        2px 2px 5px var(--shadow-dark),
+        -2px -2px 5px var(--shadow-light),
+        inset 1px 1px 1px var(--border-subtle);
+      transition: transform 0.24s cubic-bezier(0.34, 1.45, 0.64, 1), background 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+    }
+    /* Grip ridges on the curved switch thumb */
+    .tactile-switch-thumb::before,
+    .tactile-switch-thumb::after {
+      content: '';
+      width: 1.5px;
+      height: 10px;
+      border-radius: 2px;
+      background: rgba(0, 0, 0, 0.16);
+    }
+    .tactile-switch[data-checked="true"] .tactile-switch-thumb {
+      transform: translateX(30px);
+      background: linear-gradient(145deg, var(--accent-light), var(--accent-dark));
+      box-shadow:
+        2px 2px 7px var(--accent-glow),
+        inset 1px 1px 2px rgba(255, 255, 255, 0.5);
+    }
+
+    /* 5. Concave Tactile Range Slider */
+    .tactile-slider-wrap {
+      position: relative;
+      height: 18px;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+    }
+    .tactile-slider-fill {
+      position: absolute;
+      left: 3px;
+      top: 3px;
+      bottom: 3px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent-dark), var(--accent-light));
+      box-shadow: 0 0 8px var(--accent-glow);
+      pointer-events: none;
+    }
+    .tactile-range {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      position: relative;
+      z-index: 2;
+      cursor: pointer;
+      margin: 0;
+    }
+    .tactile-range::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: linear-gradient(145deg, var(--bg-surface-top), var(--bg-surface-bottom));
+      border: 2px solid var(--accent);
+      box-shadow:
+        3px 3px 7px var(--shadow-dark),
+        -2px -2px 5px var(--shadow-light);
+      cursor: grab;
+      transition: transform 0.12s ease;
+    }
+    .tactile-range::-webkit-slider-thumb:active {
+      transform: scale(1.1);
+      cursor: grabbing;
+    }
+
+    /* 6. Dot Matrix Canvas Background */
+    .dot-matrix-bg {
+      background-image: radial-gradient(var(--dot-color) 1.45px, transparent 1.45px);
+      background-size: 16px 16px;
+      background-position: 8px 8px;
+    }
+
+    /* 7. Ribbed Physical Scroll Wheel */
+    .scroll-wheel-ribs {
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(255, 255, 255, 0.25) 0px,
+        rgba(255, 255, 255, 0.25) 2px,
+        rgba(0, 0, 0, 0.12) 2px,
+        rgba(0, 0, 0, 0.12) 5px
+      );
+    }
+
+    /* 8. Ergonomic Air Mouse Cluster & Left-Hand Mirroring */
+    .air-mouse-cluster {
+      transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .air-mouse-cluster.mirrored {
+      transform: scaleX(-1);
+    }
+    .air-mouse-cluster.mirrored .unmirror {
+      transform: scaleX(-1);
+    }
+
+    /* 9. QR Scanline Animation */
+    @keyframes scanline {
+      0%, 100% { transform: translateY(14px); opacity: 0.35; }
+      50% { transform: translateY(164px); opacity: 1; }
+    }
+    .qr-scanline {
+      animation: scanline 2.6s ease-in-out infinite;
+    }
+
+    /* =========================================================================
+       PURE FLAT DESIGN KEYBOARD PRIMITIVES (Compose: FlatKeycap)
+       ========================================================================= */
+    .flat-kb-container {
+      background: var(--kb-bg);
+      border-top: 1px solid var(--kb-key-border);
+    }
+    .flat-key {
+      background: var(--kb-key-bg);
+      color: var(--text-primary);
+      border: 1px solid var(--kb-key-border);
+      border-radius: var(--radius-key);
+      box-shadow: none !important;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background-color 0.08s ease, color 0.08s ease, transform 0.06s ease;
+    }
+    .flat-key-fn {
+      background: var(--kb-key-fn);
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .flat-key:active {
+      background: var(--kb-key-pressed);
+      transform: scale(0.95);
+    }
+    .flat-key.sticky-locked {
+      background: var(--accent) !important;
+      color: var(--accent-text) !important;
+      border-color: transparent !important;
+      font-weight: 700;
+    }
+
+    /* Agent Spec Badge / Annotation Card */
+    .spec-panel {
+      background: var(--bg-base);
+      border: 1px dashed var(--accent);
+      border-radius: 16px;
+      padding: 14px 16px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
+    }
+    .spec-tag {
+      display: inline-block;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10.5px;
+      padding: 2px 6px;
+      border-radius: 5px;
+      background: var(--bg-well);
+      color: var(--text-primary);
+      border: 1px solid var(--border-contrast);
+      margin-right: 4px;
+      margin-bottom: 4px;
+    }
+    body:not(.show-specs) .spec-only {
+      display: none !important;
+    }
+
+    /* Hide scrollbar for clean preview */
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  </style>
+</head>
+<body class="show-specs">
+
+  <!-- =========================================================================
+       GLOBAL INTERACTIVE TOOLBAR (OUTSIDE PHONE FRAMES)
+       ========================================================================= -->
+  <header class="sticky top-0 z-40 backdrop-blur-md border-b" style="background: color-mix(in srgb, var(--bg-base) 86%, transparent); border-color: var(--border-contrast);">
+    <div class="max-w-[1440px] mx-auto px-4 py-3 flex flex-col gap-3">
+      <!-- Top Row: Title + Live Global Controls -->
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-xl neu-btn-accent flex items-center justify-center font-bold text-sm tracking-tight">AT</div>
+          <div>
+            <h1 class="text-sm sm:text-base font-extrabold tracking-tight" style="color: var(--text-primary);">
+              AirTouch Android UI Blueprint
+            </h1>
+            <p class="text-[11px] font-mono-tech" style="color: var(--text-secondary);">
+              Tactile Neumorphism (Home/Mouse/Touchpad) + Pure Flat Design (Keyboard)
+            </p>
+          </div>
+        </div>
+
+        <!-- Global Live Controls -->
+        <div class="flex flex-wrap items-center gap-3 sm:gap-4">
+          <!-- Accent Swatches -->
+          <div class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full neu-well">
+            <span class="text-[11px] font-medium mr-1" style="color: var(--text-secondary);">强调色</span>
+            <button onclick="setAccent('yellow')" title="亮黄 (默认)" class="w-5 h-5 rounded-full border-2 border-white/70 shadow-sm cursor-pointer transition-transform hover:scale-110" style="background:#F5B800;"></button>
+            <button onclick="setAccent('coral')" title="机械橙红" class="w-5 h-5 rounded-full border-2 border-white/70 shadow-sm cursor-pointer transition-transform hover:scale-110" style="background:#F25C3B;"></button>
+            <button onclick="setAccent('emerald')" title="极客绿" class="w-5 h-5 rounded-full border-2 border-white/70 shadow-sm cursor-pointer transition-transform hover:scale-110" style="background:#10B981;"></button>
+            <button onclick="setAccent('blue')" title="电光蓝" class="w-5 h-5 rounded-full border-2 border-white/70 shadow-sm cursor-pointer transition-transform hover:scale-110" style="background:#3B82F6;"></button>
+          </div>
+
+          <!-- Dark Mode Curved Switch -->
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-medium" style="color: var(--text-secondary);">深色</span>
+            <div id="global-dark-switch" class="tactile-switch neu-well" data-checked="false" onclick="toggleTheme()">
+              <div class="tactile-switch-thumb"></div>
+            </div>
+          </div>
+
+          <!-- Left-Hand Mode Toggle -->
+          <button id="global-lefthand-btn" onclick="toggleLeftHand()" class="neu-btn px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5">
+            <span>✋</span>
+            <span>左手镜像: <b id="lefthand-label">关</b></span>
+          </button>
+
+          <!-- Agent Specs Toggle -->
+          <button id="global-specs-btn" onclick="toggleSpecs()" class="neu-btn neu-btn-accent px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5">
+            <span>📐</span>
+            <span>开发规范标注</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Screen Navigation Tabs -->
+      <nav class="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5" id="screen-nav">
+        <button data-tab="all" onclick="switchTab('all')" class="nav-tab neu-btn neu-btn-accent px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap">全部总览 (6屏)</button>
+        <button data-tab="s1" onclick="switchTab('s1')" class="nav-tab neu-btn px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap">1. 连接与主页</button>
+        <button data-tab="s2" onclick="switchTab('s2')" class="nav-tab neu-btn px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap">2. 设置</button>
+        <button data-tab="s3" onclick="switchTab('s3')" class="nav-tab neu-btn px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap">3. 鼠标模式</button>
+        <button data-tab="s4" onclick="switchTab('s4')" class="nav-tab neu-btn px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap">4. 触控板模式</button>
+        <button data-tab="s5" onclick="switchTab('s5')" class="nav-tab neu-btn px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap">5. 竖屏键盘 (扁平)</button>
+        <button data-tab="s6" onclick="switchTab('s6')" class="nav-tab neu-btn px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap">6. 全屏横屏键盘</button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Global Floating Toast Notification -->
+  <div id="global-toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 pointer-events-none opacity-0 translate-y-3 transition-all duration-200">
+    <div class="px-4 py-2.5 rounded-full text-xs font-semibold shadow-xl flex items-center gap-2" style="background: var(--text-primary); color: var(--bg-base);">
+      <span class="w-2 h-2 rounded-full" style="background: var(--accent);"></span>
+      <span id="global-toast-text">提示信息</span>
+    </div>
+  </div>
+
+  <!-- =========================================================================
+       MAIN WORKSPACE: ALL 6 INTERACTIVE PHONE FRAMES + AGENT SPECS
+       ========================================================================= -->
+  <main class="max-w-[1440px] mx-auto px-4 py-8">
+    <div id="screens-grid" class="flex flex-wrap justify-center gap-10 items-start">
+
+      <!-- =====================================================================
+           SCREEN 1: 连接与主页 (HOME / CONNECTION)
+           Compose Route: "home"
+           ===================================================================== -->
+      <section class="screen-unit flex flex-col items-center gap-4 max-w-[380px]" data-screen="s1">
+        <div class="text-xs font-bold tracking-wider uppercase font-mono-tech" style="color: var(--text-secondary);">
+          01 · 连接与主页 (HomeScreen)
+        </div>
+
+        <div class="phone-frame phone-portrait flex flex-col justify-between p-5">
+          <!-- Status Bar Mock -->
+          <div class="flex items-center justify-between text-[11px] font-mono-tech px-1 mb-2" style="color: var(--text-muted);">
+            <span>09:41</span>
+            <div class="flex items-center gap-1.5">
+              <span>Wi-Fi</span>
+              <span>98%</span>
+            </div>
+          </div>
+
+          <!-- Header -->
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <div class="text-xl font-extrabold tracking-tight">AirTouch</div>
+              <div class="text-[11px]" style="color: var(--text-secondary);">Android 无线键鼠与空间外设</div>
+            </div>
+            <button onclick="switchTab('s2')" title="设置" class="neu-btn w-11 h-11 rounded-full flex items-center justify-center">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Upper Card: Concave QR Scanner Viewfinder -->
+          <div onclick="showToast('已触发 CameraX + ML Kit 二维码扫描')" class="neu-well rounded-[24px] h-[206px] p-4 relative overflow-hidden flex flex-col items-center justify-center cursor-pointer group mb-3.5">
+            <!-- Subtle dark camera backdrop tint -->
+            <div class="absolute inset-2.5 rounded-[18px] bg-slate-900/85 overflow-hidden flex items-center justify-center">
+              <!-- Corner Brackets -->
+              <div class="w-36 h-36 relative">
+                <span class="absolute top-0 left-0 w-5 h-5 border-t-[3px] border-l-[3px] rounded-tl-md" style="border-color: var(--accent);"></span>
+                <span class="absolute top-0 right-0 w-5 h-5 border-t-[3px] border-r-[3px] rounded-tr-md" style="border-color: var(--accent);"></span>
+                <span class="absolute bottom-0 left-0 w-5 h-5 border-b-[3px] border-l-[3px] rounded-bl-md" style="border-color: var(--accent);"></span>
+                <span class="absolute bottom-0 right-0 w-5 h-5 border-b-[3px] border-r-[3px] rounded-br-md" style="border-color: var(--accent);"></span>
+                <!-- Mock QR glyph -->
+                <div class="w-full h-full flex items-center justify-center opacity-25 text-white">
+                  <svg class="w-14 h-14" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M3 3h7v7H3V3zm2 2v3h3V5H5zm9-2h7v7h-7V3zm2 2v3h3V5h-3zM3 14h7v7H3v-7zm2 2v3h3v-3H5zm11 0h2v2h-2v-2zm-2 2h2v3h-2v-3zm4 0h3v2h-3v-2zm0 3h3v2h-3v-2zm-2-5h2v2h-2v-2z"/>
+                  </svg>
+                </div>
+              </div>
+              <!-- Animated Scanline -->
+              <div class="qr-scanline absolute top-0 left-6 right-6 h-[2px] rounded-full" style="background: var(--accent); box-shadow: 0 0 12px var(--accent);"></div>
+              <div class="absolute bottom-2.5 px-3 py-1 rounded-full bg-black/50 backdrop-blur-sm text-[11px] text-white/90 font-medium">
+                请扫描服务器二维码
+              </div>
+            </div>
+          </div>
+
+          <!-- Connection Status Card (Concave Well) -->
+          <div class="neu-well rounded-[20px] p-3.5 mb-3.5">
+            <div class="flex items-center justify-between mb-2">
+              <button id="conn-state-badge" onclick="toggleConnState()" class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold cursor-pointer transition-all" style="background: rgba(16, 185, 129, 0.14); color: #10B981;">
+                <span id="conn-dot" class="w-2 h-2 rounded-full bg-emerald-500"></span>
+                <span id="conn-state-text">已连接 (点击切换)</span>
+              </button>
+              <div class="flex items-center gap-1.5 text-[11px] font-mono-tech" style="color: var(--text-secondary);">
+                <svg class="w-3.5 h-3.5 text-emerald-500" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                </svg>
+                <span id="conn-latency">延时: 12ms</span>
+              </div>
+            </div>
+            <div class="space-y-1 text-[11.5px] font-mono-tech" style="color: var(--text-secondary);">
+              <div class="flex justify-between">
+                <span>上次连接信息:</span>
+                <span class="font-semibold" style="color: var(--text-primary);">101.5.182.150:8403</span>
+              </div>
+              <div class="flex justify-between">
+                <span>身份:</span>
+                <span class="font-semibold" style="color: var(--text-primary);">Desktop-Win11 (已信任)</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="space-y-2.5 mb-3.5">
+            <button onclick="showToast('正在连接上次设备 101.5.182.150:8403...')" class="neu-btn w-full py-3 rounded-[16px] text-sm font-bold flex items-center justify-center gap-2">
+              <span class="w-2 h-2 rounded-full" style="background: var(--accent);"></span>
+              连接上次设备
+            </button>
+            <div class="grid grid-cols-2 gap-2.5">
+              <button onclick="showToast('打开手动输入 IP/端口 弹窗')" class="neu-btn py-2.5 rounded-[14px] text-xs font-semibold">手动连接</button>
+              <button onclick="showToast('已清除本地设备信任凭证')" class="neu-btn py-2.5 rounded-[14px] text-xs font-semibold" style="color: #EF4444;">重置信任</button>
+            </div>
+          </div>
+
+          <!-- Mode Entry Section (Visible when Connected) -->
+          <div id="home-mode-section" class="grid grid-cols-2 gap-3 pt-1">
+            <button onclick="switchTab('s3')" class="neu-btn neu-btn-accent rounded-[18px] p-3 text-left flex flex-col justify-between h-[76px]">
+              <div class="flex items-center justify-between">
+                <span class="text-base">🖱️</span>
+                <span class="text-[10px] font-bold opacity-80">ENTER →</span>
+              </div>
+              <div class="text-xs font-extrabold">键鼠模式</div>
+            </button>
+            <button onclick="showToast('远控模式暂未开发，敬请期待')" class="neu-well rounded-[18px] p-3 text-left flex flex-col justify-between h-[76px] opacity-65 cursor-not-allowed">
+              <div class="flex items-center justify-between">
+                <span class="text-base grayscale">🖥️</span>
+                <span class="text-[9px] px-1.5 py-0.5 rounded-full font-semibold" style="background: var(--bg-base); color: var(--text-muted);">暂未开发</span>
+              </div>
+              <div class="text-xs font-bold" style="color: var(--text-secondary);">远控模式</div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Agent Spec Card -->
+        <div class="spec-panel spec-only w-full">
+          <div class="font-bold text-xs mb-1.5" style="color: var(--text-primary);">🤖 Compose 实现规范 · HomeScreen</div>
+          <div class="mb-1.5">
+            <span class="spec-tag">NeumorphicWell</span>
+            <span class="spec-tag">TactileSurfaceButton</span>
+            <span class="spec-tag">CameraX + ML Kit</span>
+          </div>
+          <p class="leading-relaxed">上半部分内凹槽直接嵌入实时扫码取景框（无需二次点击）；状态卡展示加密盾牌与毫秒延时；连接成功后可直接跳转 <code>AirMouseScreen</code> 减少层级。</p>
+        </div>
+      </section>
+
+      <!-- =====================================================================
+           SCREEN 2: 设置界面 (SETTINGS)
+           Compose Route: "settings"
+           ===================================================================== -->
+      <section class="screen-unit flex flex-col items-center gap-4 max-w-[380px]" data-screen="s2">
+        <div class="text-xs font-bold tracking-wider uppercase font-mono-tech" style="color: var(--text-secondary);">
+          02 · 设置界面 (SettingsScreen)
+        </div>
+
+        <div class="phone-frame phone-portrait flex flex-col p-5">
+          <!-- Status Bar -->
+          <div class="flex items-center justify-between text-[11px] font-mono-tech px-1 mb-3" style="color: var(--text-muted);">
+            <span>09:41</span>
+            <span>Wi-Fi · 98%</span>
+          </div>
+
+          <!-- Header -->
+          <div class="flex items-center gap-3 mb-6">
+            <button onclick="switchTab('s1')" class="neu-btn w-10 h-10 rounded-full flex items-center justify-center">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+            </button>
+            <h2 class="text-lg font-extrabold">设置</h2>
+          </div>
+
+          <!-- Setting Items -->
+          <div class="space-y-4 flex-1">
+            <!-- Dark Mode -->
+            <div class="neu-btn rounded-[20px] p-4 flex items-center justify-between cursor-default">
+              <div>
+                <div class="text-sm font-bold">深色模式</div>
+                <div class="text-[11px]" style="color: var(--text-secondary);">自适应暗光环境新拟物光影</div>
+              </div>
+              <div id="settings-dark-switch" class="tactile-switch neu-well" data-checked="false" onclick="toggleTheme()">
+                <div class="tactile-switch-thumb"></div>
+              </div>
+            </div>
+
+            <!-- Accent Color Picker -->
+            <div class="neu-btn rounded-[20px] p-4 cursor-default">
+              <div class="flex items-center justify-between mb-3">
+                <div>
+                  <div class="text-sm font-bold">强调色</div>
+                  <div class="text-[11px]" style="color: var(--text-secondary);">按钮激活、滑块与锁定键高亮</div>
+                </div>
+                <span class="text-[11px] font-mono-tech font-bold px-2 py-0.5 rounded-md neu-well" id="settings-accent-name">YELLOW</span>
+              </div>
+              <div class="flex items-center justify-between px-2 py-2.5 rounded-[16px] neu-well">
+                <button onclick="setAccent('yellow')" class="w-10 h-10 rounded-full neu-btn flex items-center justify-center">
+                  <span class="w-6 h-6 rounded-full" style="background:#F5B800;"></span>
+                </button>
+                <button onclick="setAccent('coral')" class="w-10 h-10 rounded-full neu-btn flex items-center justify-center">
+                  <span class="w-6 h-6 rounded-full" style="background:#F25C3B;"></span>
+                </button>
+                <button onclick="setAccent('emerald')" class="w-10 h-10 rounded-full neu-btn flex items-center justify-center">
+                  <span class="w-6 h-6 rounded-full" style="background:#10B981;"></span>
+                </button>
+                <button onclick="setAccent('blue')" class="w-10 h-10 rounded-full neu-btn flex items-center justify-center">
+                  <span class="w-6 h-6 rounded-full" style="background:#3B82F6;"></span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Left-Hand Mode -->
+            <div class="neu-btn rounded-[20px] p-4 flex items-center justify-between cursor-default">
+              <div>
+                <div class="text-sm font-bold">鼠标左手模式</div>
+                <div class="text-[11px]" style="color: var(--text-secondary);">水平镜像翻转空中鼠标倾斜按键</div>
+              </div>
+              <div id="settings-lefthand-switch" class="tactile-switch neu-well" data-checked="false" onclick="toggleLeftHand()">
+                <div class="tactile-switch-thumb"></div>
+              </div>
+            </div>
+
+            <!-- Haptic Feedback -->
+            <div class="neu-btn rounded-[20px] p-4 flex items-center justify-between cursor-default">
+              <div>
+                <div class="text-sm font-bold">线性马达震动反馈</div>
+                <div class="text-[11px]" style="color: var(--text-secondary);">模拟鼠标微动与滚轮刻度触感</div>
+              </div>
+              <div id="settings-haptic-switch" class="tactile-switch neu-well" data-checked="true" onclick="toggleSimpleSwitch(this, '震动反馈')">
+                <div class="tactile-switch-thumb"></div>
+              </div>
+            </div>
+
+            <!-- Reset Trust -->
+            <button onclick="showToast('已重置所有已配对信任设备')" class="neu-btn w-full rounded-[18px] p-3.5 text-xs font-bold flex items-center justify-center gap-2" style="color: #EF4444;">
+              <span>🗑️</span>
+              <span>重置所有信任设备</span>
+            </button>
+          </div>
+
+          <div class="text-center text-[10.5px] font-mono-tech pt-3" style="color: var(--text-muted);">
+            AirTouch v1.0 · Kotlin Jetpack Compose
+          </div>
+        </div>
+
+        <!-- Agent Spec Card -->
+        <div class="spec-panel spec-only w-full">
+          <div class="font-bold text-xs mb-1.5" style="color: var(--text-primary);">🤖 Compose 实现规范 · SettingsScreen</div>
+          <div class="mb-1.5">
+            <span class="spec-tag">TactileToggleSwitch</span>
+            <span class="spec-tag">DataStore Preferences</span>
+          </div>
+          <p class="leading-relaxed">开关采用“外凹槽 + 带防滑纹路曲面滑块”结构；强调色与左手模式存入 <code>DataStore</code> 并驱动全局 <code>AirTouchTheme</code> 状态重组。</p>
+        </div>
+      </section>
+
+      <!-- =====================================================================
+           SCREEN 3: 键鼠模式 - 鼠标 (AIR MOUSE)
+           Compose Route: "air_mouse"
+           ===================================================================== -->
+      <section class="screen-unit flex flex-col items-center gap-4 max-w-[380px]" data-screen="s3">
+        <div class="text-xs font-bold tracking-wider uppercase font-mono-tech" style="color: var(--text-secondary);">
+          03 · 鼠标模式 (AirMouseScreen)
+        </div>
+
+        <div class="phone-frame phone-portrait flex flex-col justify-between p-5">
+          <!-- Compact Top Status Pill -->
+          <div class="flex items-center justify-between mb-2">
+            <div class="neu-well px-3 py-1.5 rounded-full flex items-center gap-2 text-[11px] font-mono-tech">
+              <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span class="font-semibold">已连接 · 12ms</span>
+            </div>
+            <button onclick="switchTab('s2')" class="neu-btn w-9 h-9 rounded-full flex items-center justify-center">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+            </button>
+          </div>
+
+          <!-- Ergonomic Slanted Air Mouse Cluster (Mirrors horizontally in Left-Hand Mode) -->
+          <div id="air-mouse-cluster" class="air-mouse-cluster flex-1 flex flex-col justify-center py-2">
+            <div class="relative w-full h-[390px] flex items-center justify-center">
+              <!-- Stepped / Slanted Right-Hand Thumb Arc -->
+              <div class="grid grid-cols-[1.15fr_0.55fr_1.15fr] gap-3 w-full items-start px-1">
+                <!-- Left Click Button (Lower-left stepped ergonomic placement) -->
+                <button onmousedown="showToast('发送: 鼠标左键按下')" class="neu-btn h-[215px] mt-10 rounded-[28px] rounded-tr-[14px] flex flex-col items-center justify-center gap-2">
+                  <span class="unmirror text-base font-extrabold">左键</span>
+                  <span class="unmirror text-[10px] font-mono-tech" style="color: var(--text-muted);">LMB</span>
+                </button>
+
+                <!-- Center Vertical Ribbed Scroll Wheel (Concave Well + Draggable Ribbed Wheel) -->
+                <div class="flex flex-col items-center mt-4 gap-2">
+                  <div class="neu-well w-full h-[185px] rounded-full p-1.5 flex flex-col items-center justify-center relative overflow-hidden">
+                    <div id="air-scroll-thumb" onwheel="handleWheelVisual(event)" onclick="showToast('发送: 鼠标中键点击')" class="neu-btn scroll-wheel-ribs w-full h-[88px] rounded-full flex items-center justify-center cursor-ns-resize transition-transform duration-150">
+                      <span class="unmirror text-[9px] font-bold px-1 rounded" style="background: var(--bg-base); color: var(--text-secondary);">滚轮</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Right Click Button (Higher-right stepped ergonomic placement) -->
+                <button onmousedown="showToast('发送: 鼠标右键按下')" class="neu-btn h-[215px] -mt-2 rounded-[28px] rounded-tl-[14px] flex flex-col items-center justify-center gap-2">
+                  <span class="unmirror text-base font-extrabold">右键</span>
+                  <span class="unmirror text-[10px] font-mono-tech" style="color: var(--text-muted);">RMB</span>
+                </button>
+              </div>
+
+              <!-- Reset Gyro / Recenter Button Ergonomically Below -->
+              <button onclick="showToast('陀螺仪姿态已归零复位 (也可按实体音量键)')" class="neu-btn absolute bottom-2 right-3 w-[136px] h-[54px] rounded-full flex items-center justify-center gap-2">
+                <span class="unmirror text-sm">🎯</span>
+                <span class="unmirror text-xs font-bold">复位</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Sensitivity Slider -->
+          <div class="mb-4 px-1">
+            <div class="flex items-center justify-between text-xs mb-2">
+              <span class="font-semibold" style="color: var(--text-secondary);">灵敏度调节</span>
+              <span class="sens-value-label font-mono-tech font-bold" style="color: var(--text-primary);">1.2x</span>
+            </div>
+            <div class="tactile-slider-wrap neu-well">
+              <div class="sens-slider-fill tactile-slider-fill" style="width: 30%;"></div>
+              <input type="range" min="0.5" max="3.0" step="0.1" value="1.2" oninput="syncSensitivity(this.value)" class="sens-slider tactile-range" />
+            </div>
+          </div>
+
+          <!-- Shared Bottom Control Dock -->
+          <div class="space-y-3">
+            <!-- Concave Segmented Control -->
+            <div class="neu-well rounded-full p-1 grid grid-cols-3 gap-1">
+              <button onclick="switchTab('s3')" class="neu-btn neu-btn-accent py-2 rounded-full text-xs font-bold">鼠标</button>
+              <button onclick="switchTab('s4')" class="py-2 rounded-full text-xs font-semibold cursor-pointer" style="color: var(--text-secondary);">触控板</button>
+              <button onclick="switchTab('s5')" class="py-2 rounded-full text-xs font-semibold cursor-pointer" style="color: var(--text-secondary);">键盘</button>
+            </div>
+
+            <!-- 4 Action Buttons -->
+            <div class="flex items-center justify-between gap-2">
+              <button onclick="switchTab('s1')" title="返回主页" class="neu-btn w-11 h-11 rounded-full flex items-center justify-center">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+              </button>
+              <button onclick="togglePause(this)" title="暂停传感" class="pause-btn neu-btn w-11 h-11 rounded-full flex items-center justify-center font-bold text-xs">
+                ||
+              </button>
+              <button onclick="showToast('打开文件传输面板 (双向互传)')" title="传文件" class="neu-btn w-11 h-11 rounded-full flex items-center justify-center">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Agent Spec Card -->
+        <div class="spec-panel spec-only w-full">
+          <div class="font-bold text-xs mb-1.5" style="color: var(--text-primary);">🤖 Compose 实现规范 · AirMouseScreen</div>
+          <div class="mb-1.5">
+            <span class="spec-tag">TactileSurfaceButton</span>
+            <span class="spec-tag">TactileSlider</span>
+            <span class="spec-tag">TactileSegmentedControl</span>
+          </div>
+          <p class="leading-relaxed">倾斜错落布局贴合单手拇指弧度，开启左手模式时通过 <code>graphicsLayer(scaleX = -1f)</code> 镜像；物理音量键建议拦截为硬件复位快捷键。</p>
+        </div>
+      </section>
+
+      <!-- =====================================================================
+           SCREEN 4: 键鼠模式 - 触控板 (TOUCHPAD)
+           Compose Route: "touchpad"
+           ===================================================================== -->
+      <section class="screen-unit flex flex-col items-center gap-4 max-w-[380px]" data-screen="s4">
+        <div class="text-xs font-bold tracking-wider uppercase font-mono-tech" style="color: var(--text-secondary);">
+          04 · 触控板模式 (TouchpadScreen)
+        </div>
+
+        <div class="phone-frame phone-portrait flex flex-col justify-between p-5">
+          <!-- Compact Top Status Pill -->
+          <div class="flex items-center justify-between mb-2">
+            <div class="neu-well px-3 py-1.5 rounded-full flex items-center gap-2 text-[11px] font-mono-tech">
+              <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span class="font-semibold">已连接 · 12ms</span>
+            </div>
+            <span class="text-[10.5px] font-mono-tech" style="color: var(--text-muted);">单指左键 · 双指右键/滚轮</span>
+          </div>
+
+          <!-- Large Dot-Matrix Touchpad Area (Concave Well) -->
+          <div id="main-touchpad" class="neu-well dot-matrix-bg rounded-[24px] flex-1 my-2 relative overflow-hidden cursor-crosshair touch-none">
+            <div id="tp-ripple" class="w-10 h-10 rounded-full pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 opacity-0 transition-opacity duration-150" style="background: radial-gradient(circle, var(--accent-glow) 0%, transparent 72%); border: 1.5px solid var(--accent);"></div>
+            <div id="tp-coords" class="absolute bottom-2.5 right-3 text-[10px] font-mono-tech px-2 py-0.5 rounded-md" style="background: color-mix(in srgb, var(--bg-base) 80%, transparent); color: var(--text-muted);">
+              在点阵区滑动测试光标
+            </div>
+          </div>
+
+          <!-- Ergonomic Physical Buttons Directly BELOW Dot-Matrix Area -->
+          <div class="grid grid-cols-[1.2fr_0.65fr_1.2fr] gap-2.5 my-2.5">
+            <button onmousedown="showToast('触控板: 左键')" class="neu-btn h-12 rounded-[14px] text-xs font-bold">左键</button>
+            <button onmousedown="showToast('触控板: 中键/滚轮')" class="neu-btn scroll-wheel-ribs h-12 rounded-[14px] text-[10px] font-bold">
+              <span class="px-1.5 py-0.5 rounded" style="background: var(--bg-base);">滚轮</span>
+            </button>
+            <button onmousedown="showToast('触控板: 右键')" class="neu-btn h-12 rounded-[14px] text-xs font-bold">右键</button>
+          </div>
+
+          <!-- Sensitivity Slider -->
+          <div class="mb-3.5 px-1">
+            <div class="flex items-center justify-between text-xs mb-1.5">
+              <span class="font-semibold" style="color: var(--text-secondary);">灵敏度调节</span>
+              <span class="sens-value-label font-mono-tech font-bold">1.2x</span>
+            </div>
+            <div class="tactile-slider-wrap neu-well">
+              <div class="sens-slider-fill tactile-slider-fill" style="width: 30%;"></div>
+              <input type="range" min="0.5" max="3.0" step="0.1" value="1.2" oninput="syncSensitivity(this.value)" class="sens-slider tactile-range" />
+            </div>
+          </div>
+
+          <!-- Shared Bottom Control Dock -->
+          <div class="space-y-3">
+            <div class="neu-well rounded-full p-1 grid grid-cols-3 gap-1">
+              <button onclick="switchTab('s3')" class="py-2 rounded-full text-xs font-semibold cursor-pointer" style="color: var(--text-secondary);">鼠标</button>
+              <button onclick="switchTab('s4')" class="neu-btn neu-btn-accent py-2 rounded-full text-xs font-bold">触控板</button>
+              <button onclick="switchTab('s5')" class="py-2 rounded-full text-xs font-semibold cursor-pointer" style="color: var(--text-secondary);">键盘</button>
+            </div>
+
+            <div class="flex items-center justify-between gap-2">
+              <button onclick="switchTab('s1')" class="neu-btn w-11 h-11 rounded-full flex items-center justify-center">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+              </button>
+              <button onclick="togglePause(this)" class="pause-btn neu-btn w-11 h-11 rounded-full flex items-center justify-center font-bold text-xs">||</button>
+              <button onclick="showToast('打开文件传输面板')" class="neu-btn w-11 h-11 rounded-full flex items-center justify-center">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Agent Spec Card -->
+        <div class="spec-panel spec-only w-full">
+          <div class="font-bold text-xs mb-1.5" style="color: var(--text-primary);">🤖 Compose 实现规范 · TouchpadScreen</div>
+          <div class="mb-1.5">
+            <span class="spec-tag">DotMatrixCanvas</span>
+            <span class="spec-tag">pointerInput(awaitEachGesture)</span>
+          </div>
+          <p class="leading-relaxed">将左键/滚轮/右键优化移至点阵区<strong>正下方</strong>，符合笔记本肌肉记忆且方便单手拇指触达；点阵区直接响应多指手势。</p>
+        </div>
+      </section>
+
+      <!-- =====================================================================
+           SCREEN 5: 键鼠模式 - 竖屏键盘 (PORTRAIT KEYBOARD - PURE FLAT DESIGN)
+           Compose Route: "keyboard_portrait"
+           ===================================================================== -->
+      <section class="screen-unit flex flex-col items-center gap-4 max-w-[380px]" data-screen="s5">
+        <div class="text-xs font-bold tracking-wider uppercase font-mono-tech" style="color: var(--text-secondary);">
+          05 · 竖屏键盘 (纯扁平 FlatKeyboardScreen)
+        </div>
+
+        <div class="phone-frame phone-portrait flex flex-col justify-between overflow-hidden">
+          <!-- Floating Screenshot Preview Toast (Triggered by 截图 button) -->
+          <div id="kb-screenshot-toast" class="absolute top-12 left-4 right-4 z-30 rounded-2xl p-2.5 flex items-center gap-3 shadow-xl opacity-0 -translate-y-4 pointer-events-none transition-all duration-200" style="background: var(--bg-base); border: 1.5px solid var(--accent);">
+            <div class="w-12 h-9 rounded-lg bg-slate-800 flex items-center justify-center text-[10px] text-white font-mono-tech shrink-0">PC.PNG</div>
+            <div class="flex-1 min-w-0">
+              <div class="text-xs font-bold truncate">已收到电脑端截屏</div>
+              <div class="text-[10px]" style="color: var(--text-secondary);">点击放大预览或保存到相册</div>
+            </div>
+            <button onclick="hideScreenshotToast()" class="text-xs font-bold px-2 py-1 rounded-md" style="background: var(--accent); color: var(--accent-text);">查看</button>
+          </div>
+
+          <!-- Upper Clean Flat Area (Space for quick actions & mode switch) -->
+          <div class="p-5 flex-1 flex flex-col justify-between">
+            <div class="flex items-center justify-between text-[11px] font-mono-tech" style="color: var(--text-muted);">
+              <span>PURE FLAT MODE</span>
+              <span>已连接 · 12ms</span>
+            </div>
+
+            <!-- Live Key Output Preview Bar -->
+            <div class="rounded-2xl p-3.5 my-auto" style="background: var(--kb-bg); border: 1px solid var(--kb-key-border);">
+              <div class="text-[10px] font-mono-tech mb-1" style="color: var(--text-muted);">实时键值发送监视器 (Mock)</div>
+              <div id="kb-output-log" class="text-xs font-mono-tech font-bold truncate" style="color: var(--text-primary);">等待按键输入...</div>
+            </div>
+
+            <!-- Top Controls Row: Back, Fullscreen, File -->
+            <div class="space-y-3">
+              <div class="flex items-center justify-between">
+                <button onclick="switchTab('s1')" class="flat-key w-10 h-10 rounded-full">
+                  <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+                </button>
+                <div class="flex items-center gap-2.5">
+                  <button onclick="switchTab('s6')" title="展开全屏横屏键盘" class="flat-key h-10 px-3.5 rounded-full text-xs font-bold gap-1.5">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"/></svg>
+                    <span>全屏键盘</span>
+                  </button>
+                  <button onclick="showToast('打开文件传输')" class="flat-key w-10 h-10 rounded-full">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Flat-friendly Segmented Switch -->
+              <div class="rounded-full p-1 grid grid-cols-3 gap-1" style="background: var(--kb-bg); border: 1px solid var(--kb-key-border);">
+                <button onclick="switchTab('s3')" class="py-1.5 rounded-full text-xs font-semibold cursor-pointer" style="color: var(--text-secondary);">鼠标</button>
+                <button onclick="switchTab('s4')" class="py-1.5 rounded-full text-xs font-semibold cursor-pointer" style="color: var(--text-secondary);">触控板</button>
+                <button onclick="switchTab('s5')" class="py-1.5 rounded-full text-xs font-bold" style="background: var(--accent); color: var(--accent-text);">键盘</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- PURE FLAT KEYBOARD DECK -->
+          <div class="flat-kb-container p-2 pb-4 space-y-1.5">
+            <!-- Utility Toolbar: Esc | 切换9键 | Cross D-Pad Joystick | Delete | 截图 -->
+            <div class="flex items-center justify-between gap-1.5 pb-1 border-b" style="border-color: var(--kb-key-border);">
+              <button onclick="pressKey('Esc')" class="flat-key flat-key-fn h-9 px-2.5">Esc</button>
+              <button id="toggle-t9-btn" onclick="toggleT9Mode()" class="flat-key flat-key-fn h-9 px-2.5">切换9键</button>
+
+              <!-- Interactive Cross D-Pad / Joystick -->
+              <div class="relative w-12 h-11 flex items-center justify-center shrink-0" title="十字方向键摇杆">
+                <button onclick="pressKey('↑')" class="absolute top-0 left-1/2 -translate-x-1/2 w-5 h-4 text-[9px] font-bold rounded-t flex items-center justify-center cursor-pointer" style="background: var(--accent); color: var(--accent-text);">▲</button>
+                <button onclick="pressKey('↓')" class="absolute bottom-0 left-1/2 -translate-x-1/2 w-5 h-4 text-[9px] font-bold rounded-b flex items-center justify-center cursor-pointer" style="background: var(--accent); color: var(--accent-text);">▼</button>
+                <button onclick="pressKey('←')" class="absolute left-0 top-1/2 -translate-y-1/2 w-4 h-5 text-[9px] font-bold rounded-l flex items-center justify-center cursor-pointer" style="background: var(--accent); color: var(--accent-text);">◀</button>
+                <button onclick="pressKey('→')" class="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-5 text-[9px] font-bold rounded-r flex items-center justify-center cursor-pointer" style="background: var(--accent); color: var(--accent-text);">▶</button>
+                <div class="w-3.5 h-3.5 rounded-full z-10" style="background: var(--kb-key-bg); border: 1.5px solid var(--accent);"></div>
+              </div>
+
+              <button onclick="pressKey('Delete')" class="flat-key flat-key-fn h-9 px-2">Del</button>
+              <button onclick="triggerScreenshot()" class="flat-key flat-key-fn h-9 px-2.5" style="color: var(--text-primary);">截图</button>
+            </div>
+
+            <!-- QWERTY Flat Grid (Default) -->
+            <div id="kb-qwerty-grid" class="space-y-1.5">
+              <!-- Number Row -->
+              <div class="grid grid-cols-12 gap-1">
+                <button onclick="pressKey('~')" class="flat-key h-9 text-xs">~</button>
+                <button onclick="pressKey('1')" class="flat-key h-9 text-xs">1</button>
+                <button onclick="pressKey('2')" class="flat-key h-9 text-xs">2</button>
+                <button onclick="pressKey('3')" class="flat-key h-9 text-xs">3</button>
+                <button onclick="pressKey('4')" class="flat-key h-9 text-xs">4</button>
+                <button onclick="pressKey('5')" class="flat-key h-9 text-xs">5</button>
+                <button onclick="pressKey('6')" class="flat-key h-9 text-xs">6</button>
+                <button onclick="pressKey('7')" class="flat-key h-9 text-xs">7</button>
+                <button onclick="pressKey('8')" class="flat-key h-9 text-xs">8</button>
+                <button onclick="pressKey('9')" class="flat-key h-9 text-xs">9</button>
+                <button onclick="pressKey('0')" class="flat-key h-9 text-xs">0</button>
+                <button onclick="pressKey('⌫')" class="flat-key flat-key-fn h-9 text-xs">⌫</button>
+              </div>
+              <!-- QWERTY Row -->
+              <div class="grid grid-cols-11 gap-1">
+                <button onclick="pressKey('Tab')" class="flat-key flat-key-fn h-10 text-[10px]">Tab</button>
+                <button onclick="pressKey('Q')" class="flat-key h-10 text-xs">Q</button>
+                <button onclick="pressKey('W')" class="flat-key h-10 text-xs">W</button>
+                <button onclick="pressKey('E')" class="flat-key h-10 text-xs">E</button>
+                <button onclick="pressKey('R')" class="flat-key h-10 text-xs">R</button>
+                <button onclick="pressKey('T')" class="flat-key h-10 text-xs">T</button>
+                <button onclick="pressKey('Y')" class="flat-key h-10 text-xs">Y</button>
+                <button onclick="pressKey('U')" class="flat-key h-10 text-xs">U</button>
+                <button onclick="pressKey('I')" class="flat-key h-10 text-xs">I</button>
+                <button onclick="pressKey('O')" class="flat-key h-10 text-xs">O</button>
+                <button onclick="pressKey('P')" class="flat-key h-10 text-xs">P</button>
+              </div>
+              <!-- ASDF Row -->
+              <div class="grid grid-cols-11 gap-1">
+                <button onclick="toggleSticky(this, 'Caps')" class="flat-key flat-key-fn h-10 text-[9px]">Caps</button>
+                <button onclick="pressKey('A')" class="flat-key h-10 text-xs">A</button>
+                <button onclick="pressKey('S')" class="flat-key h-10 text-xs">S</button>
+                <button onclick="pressKey('D')" class="flat-key h-10 text-xs">D</button>
+                <button onclick="pressKey('F')" class="flat-key h-10 text-xs">F</button>
+                <button onclick="pressKey('G')" class="flat-key h-10 text-xs">G</button>
+                <button onclick="pressKey('H')" class="flat-key h-10 text-xs">H</button>
+                <button onclick="pressKey('J')" class="flat-key h-10 text-xs">J</button>
+                <button onclick="pressKey('K')" class="flat-key h-10 text-xs">K</button>
+                <button onclick="pressKey('L')" class="flat-key h-10 text-xs">L</button>
+                <button onclick="pressKey('Enter')" class="flat-key flat-key-fn h-10 text-[10px]">↵</button>
+              </div>
+              <!-- ZXCV Row -->
+              <div class="grid grid-cols-10 gap-1">
+                <button onclick="toggleSticky(this, 'Shift')" class="flat-key flat-key-fn h-10 col-span-1 text-[10px]">⇧</button>
+                <button onclick="pressKey('Z')" class="flat-key h-10 text-xs">Z</button>
+                <button onclick="pressKey('X')" class="flat-key h-10 text-xs">X</button>
+                <button onclick="pressKey('C')" class="flat-key h-10 text-xs">C</button>
+                <button onclick="pressKey('V')" class="flat-key h-10 text-xs">V</button>
+                <button onclick="pressKey('B')" class="flat-key h-10 text-xs">B</button>
+                <button onclick="pressKey('N')" class="flat-key h-10 text-xs">N</button>
+                <button onclick="pressKey('M')" class="flat-key h-10 text-xs">M</button>
+                <button onclick="pressKey('.')" class="flat-key h-10 text-xs">.</button>
+                <button onclick="toggleSticky(this, 'Shift')" class="flat-key flat-key-fn h-10 text-[10px]">⇧</button>
+              </div>
+              <!-- Modifiers & Space Row -->
+              <div class="grid grid-cols-10 gap-1">
+                <button onclick="toggleSticky(this, 'Ctrl')" class="flat-key flat-key-fn h-10 col-span-1 text-[10px]">Ctrl</button>
+                <button onclick="toggleSticky(this, 'Win')" class="flat-key flat-key-fn h-10 col-span-1 text-[10px]">Win</button>
+                <button onclick="toggleSticky(this, 'Alt')" class="flat-key flat-key-fn h-10 col-span-1 text-[10px]">Alt</button>
+                <button onclick="pressKey('Space')" class="flat-key h-10 col-span-5 text-[11px]">Space</button>
+                <button onclick="toggleSticky(this, 'Alt')" class="flat-key flat-key-fn h-10 col-span-1 text-[10px]">Alt</button>
+                <button onclick="toggleSticky(this, 'Ctrl')" class="flat-key flat-key-fn h-10 col-span-1 text-[10px]">Ctrl</button>
+              </div>
+            </div>
+
+            <!-- 9-Key (5 Columns x 4 Rows) Flat Grid (Hidden by default) -->
+            <div id="kb-t9-grid" class="hidden grid grid-cols-5 gap-1.5">
+              <!-- Row 1 -->
+              <button onclick="pressKey('，')" class="flat-key flat-key-fn h-12 text-xs">，</button>
+              <button onclick="pressKey('1 @')" class="flat-key h-12 flex-col"><span class="text-xs font-bold">1</span><span class="text-[9px] opacity-60">@/.</span></button>
+              <button onclick="pressKey('2 ABC')" class="flat-key h-12 flex-col"><span class="text-xs font-bold">2</span><span class="text-[9px] opacity-60">ABC</span></button>
+              <button onclick="pressKey('3 DEF')" class="flat-key h-12 flex-col"><span class="text-xs font-bold">3</span><span class="text-[9px] opacity-60">DEF</span></button>
+              <button onclick="pressKey('⌫')" class="flat-key flat-key-fn h-12 text-sm">⌫</button>
+              <!-- Row 2 -->
+              <button onclick="pressKey('。')" class="flat-key flat-key-fn h-12 text-xs">。</button>
+              <button onclick="pressKey('4 GHI')" class="flat-key h-12 flex-col"><span class="text-xs font-bold">4</span><span class="text-[9px] opacity-60">GHI</span></button>
+              <button onclick="pressKey('5 JKL')" class="flat-key h-12 flex-col"><span class="text-xs font-bold">5</span><span class="text-[9px] opacity-60">JKL</span></button>
+              <button onclick="pressKey('6 MNO')" class="flat-key h-12 flex-col"><span class="text-xs font-bold">6</span><span class="text-[9px] opacity-60">MNO</span></button>
+              <button onclick="pressKey('重输')" class="flat-key flat-key-fn h-12 text-[10px]">重输</button>
+              <!-- Row 3 -->
+              <button onclick="pressKey('？')" class="flat-key flat-key-fn h-12 text-xs">？</button>
+              <button onclick="pressKey('7 PQRS')" class="flat-key h-12 flex-col"><span class="text-xs font-bold">7</span><span class="text-[9px] opacity-60">PQRS</span></button>
+              <button onclick="pressKey('8 TUV')" class="flat-key h-12 flex-col"><span class="text-xs font-bold">8</span><span class="text-[9px] opacity-60">TUV</span></button>
+              <button onclick="pressKey('9 WXYZ')" class="flat-key h-12 flex-col"><span class="text-xs font-bold">9</span><span class="text-[9px] opacity-60">WXYZ</span></button>
+              <button onclick="toggleSticky(this, 'Shift')" class="flat-key flat-key-fn h-12 text-[10px]">Shift</button>
+              <!-- Row 4 -->
+              <button onclick="toggleSticky(this, 'Ctrl')" class="flat-key flat-key-fn h-12 text-[10px]">Ctrl</button>
+              <button onclick="pressKey('123')" class="flat-key flat-key-fn h-12 text-xs">123</button>
+              <button onclick="pressKey('Space')" class="flat-key h-12 text-xs">空格</button>
+              <button onclick="toggleSticky(this, 'Alt')" class="flat-key flat-key-fn h-12 text-[10px]">Alt</button>
+              <button onclick="pressKey('Enter')" class="flat-key h-12 text-xs font-bold" style="background: var(--accent); color: var(--accent-text);">回车</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Agent Spec Card -->
+        <div class="spec-panel spec-only w-full">
+          <div class="font-bold text-xs mb-1.5" style="color: var(--text-primary);">🤖 Compose 实现规范 · FlatKeyboardScreen</div>
+          <div class="mb-1.5">
+            <span class="spec-tag">FlatKeycap</span>
+            <span class="spec-tag">StickyModifierState</span>
+            <span class="spec-tag">CrossJoystick</span>
+          </div>
+          <p class="leading-relaxed">键盘区域<strong>零拟物阴影</strong>，纯扁平 <code>6dp</code> 圆角键帽；<code>Ctrl/Shift/Alt/Win</code> 支持单击粘滞锁定（高亮强调色）；支持一键切换 5×4 九键与全键盘。</p>
+        </div>
+      </section>
+
+      <!-- =====================================================================
+           SCREEN 6: 键鼠模式 - 全屏横屏键盘 (LANDSCAPE FULLSCREEN KEYBOARD)
+           Compose Route: "keyboard_landscape"
+           ===================================================================== -->
+      <section class="screen-unit flex flex-col items-center gap-4 w-full max-w-[820px]" data-screen="s6">
+        <div class="text-xs font-bold tracking-wider uppercase font-mono-tech" style="color: var(--text-secondary);">
+          06 · 全屏横屏键盘 + 悬浮微触控板 (LandscapeKeyboardScreen)
+        </div>
+
+        <div class="phone-frame phone-landscape p-3 flex gap-2.5 items-stretch relative overflow-x-auto">
+          <!-- Main Full PC Flat Keyboard Layout -->
+          <div class="flex-1 flex flex-col justify-between gap-1 min-w-[660px] p-2 rounded-[22px]" style="background: var(--kb-bg); border: 1px solid var(--kb-key-border);">
+            <!-- Row 0: Esc + F1-F12 + PrtSc -->
+            <div class="grid grid-cols-[1.1fr_repeat(12,1fr)_1.2fr_1.2fr] gap-1">
+              <button onclick="pressKey('Esc')" class="flat-key flat-key-fn h-8 text-[10px]">Esc</button>
+              <button onclick="pressKey('F1')" class="flat-key flat-key-fn h-8 text-[10px]">F1</button>
+              <button onclick="pressKey('F2')" class="flat-key flat-key-fn h-8 text-[10px]">F2</button>
+              <button onclick="pressKey('F3')" class="flat-key flat-key-fn h-8 text-[10px]">F3</button>
+              <button onclick="pressKey('F4')" class="flat-key flat-key-fn h-8 text-[10px]">F4</button>
+              <button onclick="pressKey('F5')" class="flat-key flat-key-fn h-8 text-[10px]">F5</button>
+              <button onclick="pressKey('F6')" class="flat-key flat-key-fn h-8 text-[10px]">F6</button>
+              <button onclick="pressKey('F7')" class="flat-key flat-key-fn h-8 text-[10px]">F7</button>
+              <button onclick="pressKey('F8')" class="flat-key flat-key-fn h-8 text-[10px]">F8</button>
+              <button onclick="pressKey('F9')" class="flat-key flat-key-fn h-8 text-[10px]">F9</button>
+              <button onclick="pressKey('F10')" class="flat-key flat-key-fn h-8 text-[10px]">F10</button>
+              <button onclick="pressKey('F11')" class="flat-key flat-key-fn h-8 text-[10px]">F11</button>
+              <button onclick="pressKey('F12')" class="flat-key flat-key-fn h-8 text-[10px]">F12</button>
+              <button onclick="pressKey('PrtSc')" class="flat-key flat-key-fn h-8 text-[9px]">PrtSc</button>
+              <button onclick="pressKey('Del')" class="flat-key flat-key-fn h-8 text-[10px]">Del</button>
+            </div>
+
+            <!-- Main Typing + Compact Numpad Rows -->
+            <div class="grid grid-cols-[1fr_132px] gap-2 flex-1">
+              <!-- Left Main Block -->
+              <div class="flex flex-col justify-between gap-1">
+                <!-- Row 1: Numbers -->
+                <div class="grid grid-cols-[repeat(13,1fr)_1.8fr] gap-1 flex-1">
+                  <button onclick="pressKey('`')" class="flat-key text-[11px]">`</button>
+                  <button onclick="pressKey('1')" class="flat-key text-[11px]">1</button>
+                  <button onclick="pressKey('2')" class="flat-key text-[11px]">2</button>
+                  <button onclick="pressKey('3')" class="flat-key text-[11px]">3</button>
+                  <button onclick="pressKey('4')" class="flat-key text-[11px]">4</button>
+                  <button onclick="pressKey('5')" class="flat-key text-[11px]">5</button>
+                  <button onclick="pressKey('6')" class="flat-key text-[11px]">6</button>
+                  <button onclick="pressKey('7')" class="flat-key text-[11px]">7</button>
+                  <button onclick="pressKey('8')" class="flat-key text-[11px]">8</button>
+                  <button onclick="pressKey('9')" class="flat-key text-[11px]">9</button>
+                  <button onclick="pressKey('0')" class="flat-key text-[11px]">0</button>
+                  <button onclick="pressKey('-')" class="flat-key text-[11px]">-</button>
+                  <button onclick="pressKey('=')" class="flat-key text-[11px]">=</button>
+                  <button onclick="pressKey('Backspace')" class="flat-key flat-key-fn text-[10px]">⌫ Bksp</button>
+                </div>
+                <!-- Row 2: QWERTY -->
+                <div class="grid grid-cols-[1.4fr_repeat(12,1fr)_1.4fr] gap-1 flex-1">
+                  <button onclick="pressKey('Tab')" class="flat-key flat-key-fn text-[10px]">Tab</button>
+                  <button onclick="pressKey('Q')" class="flat-key text-[11px]">Q</button>
+                  <button onclick="pressKey('W')" class="flat-key text-[11px]">W</button>
+                  <button onclick="pressKey('E')" class="flat-key text-[11px]">E</button>
+                  <button onclick="pressKey('R')" class="flat-key text-[11px]">R</button>
+                  <button onclick="pressKey('T')" class="flat-key text-[11px]">T</button>
+                  <button onclick="pressKey('Y')" class="flat-key text-[11px]">Y</button>
+                  <button onclick="pressKey('U')" class="flat-key text-[11px]">U</button>
+                  <button onclick="pressKey('I')" class="flat-key text-[11px]">I</button>
+                  <button onclick="pressKey('O')" class="flat-key text-[11px]">O</button>
+                  <button onclick="pressKey('P')" class="flat-key text-[11px]">P</button>
+                  <button onclick="pressKey('[')" class="flat-key text-[11px]">[</button>
+                  <button onclick="pressKey(']')" class="flat-key text-[11px]">]</button>
+                  <button onclick="pressKey('\\')" class="flat-key text-[11px]">\</button>
+                </div>
+                <!-- Row 3: ASDF -->
+                <div class="grid grid-cols-[1.7fr_repeat(11,1fr)_2.1fr] gap-1 flex-1">
+                  <button onclick="toggleSticky(this, 'Caps')" class="flat-key flat-key-fn text-[10px]">Caps</button>
+                  <button onclick="pressKey('A')" class="flat-key text-[11px]">A</button>
+                  <button onclick="pressKey('S')" class="flat-key text-[11px]">S</button>
+                  <button onclick="pressKey('D')" class="flat-key text-[11px]">D</button>
+                  <button onclick="pressKey('F')" class="flat-key text-[11px]">F</button>
+                  <button onclick="pressKey('G')" class="flat-key text-[11px]">G</button>
+                  <button onclick="pressKey('H')" class="flat-key text-[11px]">H</button>
+                  <button onclick="pressKey('J')" class="flat-key text-[11px]">J</button>
+                  <button onclick="pressKey('K')" class="flat-key text-[11px]">K</button>
+                  <button onclick="pressKey('L')" class="flat-key text-[11px]">L</button>
+                  <button onclick="pressKey(';')" class="flat-key text-[11px]">;</button>
+                  <button onclick="pressKey('\'')" class="flat-key text-[11px]">'</button>
+                  <button onclick="pressKey('Enter')" class="flat-key flat-key-fn text-[10px]">Enter ↵</button>
+                </div>
+                <!-- Row 4: ZXCV -->
+                <div class="grid grid-cols-[2.2fr_repeat(10,1fr)_2.4fr] gap-1 flex-1">
+                  <button onclick="toggleSticky(this, 'Shift')" class="flat-key flat-key-fn text-[10px]">Shift</button>
+                  <button onclick="pressKey('Z')" class="flat-key text-[11px]">Z</button>
+                  <button onclick="pressKey('X')" class="flat-key text-[11px]">X</button>
+                  <button onclick="pressKey('C')" class="flat-key text-[11px]">C</button>
+                  <button onclick="pressKey('V')" class="flat-key text-[11px]">V</button>
+                  <button onclick="pressKey('B')" class="flat-key text-[11px]">B</button>
+                  <button onclick="pressKey('N')" class="flat-key text-[11px]">N</button>
+                  <button onclick="pressKey('M')" class="flat-key text-[11px]">M</button>
+                  <button onclick="pressKey(',')" class="flat-key text-[11px]">,</button>
+                  <button onclick="pressKey('.')" class="flat-key text-[11px]">.</button>
+                  <button onclick="pressKey('/')" class="flat-key text-[11px]">/</button>
+                  <button onclick="toggleSticky(this, 'Shift')" class="flat-key flat-key-fn text-[10px]">Shift</button>
+                </div>
+                <!-- Row 5: Modifiers + Space + Arrows -->
+                <div class="grid grid-cols-[1.2fr_1.1fr_1.1fr_5.4fr_1.1fr_1.1fr_1fr_1fr_1fr] gap-1 flex-1">
+                  <button onclick="toggleSticky(this, 'Ctrl')" class="flat-key flat-key-fn text-[10px]">Ctrl</button>
+                  <button onclick="toggleSticky(this, 'Win')" class="flat-key flat-key-fn text-[10px]">Win</button>
+                  <button onclick="toggleSticky(this, 'Alt')" class="flat-key flat-key-fn text-[10px]">Alt</button>
+                  <button onclick="pressKey('Space')" class="flat-key text-[10px]">Space</button>
+                  <button onclick="toggleSticky(this, 'Alt')" class="flat-key flat-key-fn text-[10px]">Alt</button>
+                  <button onclick="toggleSticky(this, 'Ctrl')" class="flat-key flat-key-fn text-[10px]">Ctrl</button>
+                  <button onclick="pressKey('←')" class="flat-key flat-key-fn text-[10px]">◀</button>
+                  <div class="grid grid-rows-2 gap-0.5">
+                    <button onclick="pressKey('↑')" class="flat-key flat-key-fn text-[8px]">▲</button>
+                    <button onclick="pressKey('↓')" class="flat-key flat-key-fn text-[8px]">▼</button>
+                  </div>
+                  <button onclick="pressKey('→')" class="flat-key flat-key-fn text-[10px]">▶</button>
+                </div>
+              </div>
+
+              <!-- Right Compact Numpad -->
+              <div class="grid grid-cols-4 grid-rows-5 gap-1">
+                <button onclick="pressKey('Num')" class="flat-key flat-key-fn text-[9px]">Num</button>
+                <button onclick="pressKey('/')" class="flat-key flat-key-fn text-[10px]">/</button>
+                <button onclick="pressKey('*')" class="flat-key flat-key-fn text-[10px]">*</button>
+                <button onclick="pressKey('-')" class="flat-key flat-key-fn text-[10px]">-</button>
+
+                <button onclick="pressKey('Num7')" class="flat-key text-[11px]">7</button>
+                <button onclick="pressKey('Num8')" class="flat-key text-[11px]">8</button>
+                <button onclick="pressKey('Num9')" class="flat-key text-[11px]">9</button>
+                <button onclick="pressKey('+')" class="flat-key flat-key-fn row-span-2 text-[11px]">+</button>
+
+                <button onclick="pressKey('Num4')" class="flat-key text-[11px]">4</button>
+                <button onclick="pressKey('Num5')" class="flat-key text-[11px]">5</button>
+                <button onclick="pressKey('Num6')" class="flat-key text-[11px]">6</button>
+
+                <button onclick="pressKey('Num1')" class="flat-key text-[11px]">1</button>
+                <button onclick="pressKey('Num2')" class="flat-key text-[11px]">2</button>
+                <button onclick="pressKey('Num3')" class="flat-key text-[11px]">3</button>
+                <button onclick="pressKey('NumEnter')" class="flat-key flat-key-fn row-span-2 text-[9px]">Ent</button>
+
+                <button onclick="pressKey('Num0')" class="flat-key col-span-2 text-[11px]">0</button>
+                <button onclick="pressKey('.')" class="flat-key text-[11px]">.</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right-Side Floating Control Column -->
+          <div class="w-[54px] flex flex-col justify-end items-center gap-3 pb-1 shrink-0 relative">
+            <!-- Hand Icon Button -> Toggles Floating Mini Dot-Matrix Touchpad -->
+            <button id="mini-tp-toggle-btn" onclick="toggleMiniTouchpad()" title="点击打开/关闭悬浮微触控板" class="neu-btn w-12 h-12 rounded-full flex items-center justify-center text-lg">
+              👆
+            </button>
+            <!-- Exit Fullscreen Button -->
+            <button onclick="switchTab('s5')" title="退出全屏" class="neu-btn w-12 h-12 rounded-full flex items-center justify-center">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Floating Mini Dot-Matrix Touchpad Popover Bubble (Neumorphic Card over Flat Keyboard) -->
+          <div id="mini-touchpad-popover" class="hidden absolute right-[72px] bottom-[72px] w-[200px] h-[160px] rounded-[22px] p-2.5 z-30 shadow-2xl transition-all" style="background: var(--bg-base); border: 2px solid var(--accent);">
+            <div class="flex items-center justify-between text-[10px] font-mono-tech mb-1 px-1" style="color: var(--text-secondary);">
+              <span>迷你触控板</span>
+              <button onclick="toggleMiniTouchpad()" class="font-bold cursor-pointer">✕</button>
+            </div>
+            <div id="mini-touchpad-area" class="neu-well dot-matrix-bg w-full h-[116px] rounded-[14px] relative overflow-hidden cursor-crosshair touch-none">
+              <div id="mini-tp-ripple" class="w-7 h-7 rounded-full pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 opacity-0" style="background: radial-gradient(circle, var(--accent-glow) 0%, transparent 72%); border: 1.5px solid var(--accent);"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Agent Spec Card -->
+        <div class="spec-panel spec-only w-full">
+          <div class="font-bold text-xs mb-1.5" style="color: var(--text-primary);">🤖 Compose 实现规范 · LandscapeKeyboardScreen</div>
+          <div class="mb-1.5">
+            <span class="spec-tag">FlatKeycap</span>
+            <span class="spec-tag">AnimatedVisibility(FloatingMiniTouchpad)</span>
+            <span class="spec-tag">Modifier.pointerInput</span>
+          </div>
+          <p class="leading-relaxed">横屏全键盘主体为纯扁平 PC 键位，右侧悬浮“手形”新拟物圆钮，点击后在键盘上方以 <code>Popup</code> 或 <code>Box</code> 叠层呼出带点阵背景的新拟物微触控板，实现“扁平打字 + 拟物微调光标”的无缝衔接。</p>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <script>
+    // =========================================================================
+    // INTERACTIVE PROTOTYPE STATE & LOGIC
+    // =========================================================================
+    let currentTheme = 'light';
+    let currentAccent = 'yellow';
+    let isLeftHand = false;
+    let isConnected = true;
+    let isT9Mode = false;
+    let toastTimer = null;
+    let screenshotTimer = null;
+
+    function showToast(msg) {
+      const toast = document.getElementById('global-toast');
+      const text = document.getElementById('global-toast-text');
+      text.textContent = msg;
+      toast.classList.remove('opacity-0', 'translate-y-3');
+      toast.classList.add('opacity-100', 'translate-y-0');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toast.classList.add('opacity-0', 'translate-y-3');
+        toast.classList.remove('opacity-100', 'translate-y-0');
+      }, 2100);
+    }
+
+    // 1. Theme Toggle (Synced across global toolbar & Settings screen)
+    function toggleTheme() {
+      currentTheme = currentTheme === 'light' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', currentTheme);
+      const checked = currentTheme === 'dark' ? 'true' : 'false';
+      document.getElementById('global-dark-switch').setAttribute('data-checked', checked);
+      document.getElementById('settings-dark-switch').setAttribute('data-checked', checked);
+      showToast(currentTheme === 'dark' ? '已切换至深色模式' : '已切换至浅色模式');
+    }
+
+    // 2. Accent Color Switcher
+    function setAccent(color) {
+      currentAccent = color;
+      document.documentElement.setAttribute('data-accent', color);
+      const nameMap = { yellow: 'YELLOW', coral: 'CORAL', emerald: 'EMERALD', blue: 'BLUE' };
+      document.getElementById('settings-accent-name').textContent = nameMap[color];
+      showToast('强调色已切换: ' + nameMap[color]);
+    }
+
+    // 3. Left-Hand Mode Mirroring (Air Mouse)
+    function toggleLeftHand() {
+      isLeftHand = !isLeftHand;
+      const cluster = document.getElementById('air-mouse-cluster');
+      cluster.classList.toggle('mirrored', isLeftHand);
+      document.getElementById('lefthand-label').textContent = isLeftHand ? '开' : '关';
+      document.getElementById('settings-lefthand-switch').setAttribute('data-checked', isLeftHand ? 'true' : 'false');
+      document.getElementById('global-lefthand-btn').classList.toggle('neu-active-ring', isLeftHand);
+      showToast(isLeftHand ? '空中鼠标已开启左手水平镜像' : '空中鼠标已恢复右手默认布局');
+    }
+
+    // 4. Agent Specs Toggle
+    function toggleSpecs() {
+      document.body.classList.toggle('show-specs');
+      const isShowing = document.body.classList.contains('show-specs');
+      document.getElementById('global-specs-btn').classList.toggle('neu-btn-accent', isShowing);
+    }
+
+    // 5. Simple Switch Toggle
+    function toggleSimpleSwitch(el, label) {
+      const next = el.getAttribute('data-checked') !== 'true';
+      el.setAttribute('data-checked', next ? 'true' : 'false');
+      showToast(label + (next ? '已开启' : '已关闭'));
+    }
+
+    // 6. Tab Navigation (All Screens vs Individual Screen)
+    function switchTab(tabId) {
+      document.querySelectorAll('.nav-tab').forEach(btn => {
+        const active = btn.getAttribute('data-tab') === tabId;
+        btn.classList.toggle('neu-btn-accent', active);
+      });
+      document.querySelectorAll('.screen-unit').forEach(sec => {
+        if (tabId === 'all' || sec.getAttribute('data-screen') === tabId) {
+          sec.classList.remove('hidden');
+        } else {
+          sec.classList.add('hidden');
+        }
+      });
+    }
+
+    // 7. Home Connection Status Toggle
+    function toggleConnState() {
+      isConnected = !isConnected;
+      const badge = document.getElementById('conn-state-badge');
+      const dot = document.getElementById('conn-dot');
+      const text = document.getElementById('conn-state-text');
+      const latency = document.getElementById('conn-latency');
+      const modeSection = document.getElementById('home-mode-section');
+
+      if (isConnected) {
+        badge.style.background = 'rgba(16, 185, 129, 0.14)';
+        badge.style.color = '#10B981';
+        dot.className = 'w-2 h-2 rounded-full bg-emerald-500';
+        text.textContent = '已连接 (点击切换)';
+        latency.textContent = '延时: 12ms';
+        modeSection.classList.remove('opacity-35', 'pointer-events-none');
+      } else {
+        badge.style.background = 'rgba(239, 68, 68, 0.14)';
+        badge.style.color = '#EF4444';
+        dot.className = 'w-2 h-2 rounded-full bg-red-500';
+        text.textContent = '未连接 (点击切换)';
+        latency.textContent = '延时: -- ms';
+        modeSection.classList.add('opacity-35', 'pointer-events-none');
+      }
+    }
+
+    // 8. Sync Sensitivity Slider across Mouse & Touchpad
+    function syncSensitivity(val) {
+      const num = parseFloat(val).toFixed(1);
+      const pct = ((val - 0.5) / 2.5) * 100;
+      document.querySelectorAll('.sens-value-label').forEach(el => el.textContent = num + 'x');
+      document.querySelectorAll('.sens-slider').forEach(el => el.value = val);
+      document.querySelectorAll('.sens-slider-fill').forEach(el => el.style.width = Math.max(8, pct) + '%');
+    }
+
+    // 10. Pause Button Toggle
+    function togglePause(btn) {
+      const paused = !btn.classList.contains('neu-active-ring');
+      document.querySelectorAll('.pause-btn').forEach(b => {
+        b.classList.toggle('neu-active-ring', paused);
+        b.textContent = paused ? '▶' : '||';
+      });
+      showToast(paused ? '已暂停传感器数据发送' : '已恢复传感器数据发送');
+    }
+
+    // 11. Scroll Wheel Visual Feedback
+    function handleWheelVisual(e) {
+      e.preventDefault();
+      const thumb = document.getElementById('air-scroll-thumb');
+      const dy = e.deltaY > 0 ? 14 : -14;
+      thumb.style.transform = `translateY(${dy}px)`;
+      setTimeout(() => thumb.style.transform = 'translateY(0px)', 140);
+    }
+
+    // 12. Dot-Matrix Touchpad Interactive Ripple
+    function bindTouchpad(padId, rippleId, coordsId) {
+      const pad = document.getElementById(padId);
+      const ripple = document.getElementById(rippleId);
+      const coords = coordsId ? document.getElementById(coordsId) : null;
+      if (!pad || !ripple) return;
+
+      const moveHandler = (clientX, clientY) => {
+        const rect = pad.getBoundingClientRect();
+        const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+        const y = Math.max(0, Math.min(rect.height, clientY - rect.top));
+        ripple.style.left = x + 'px';
+        ripple.style.top = y + 'px';
+        ripple.style.opacity = '1';
+        if (coords) coords.textContent = `dx:${Math.round(x)} dy:${Math.round(y)}`;
+      };
+
+      pad.addEventListener('mousemove', e => { if (e.buttons === 1 || true) moveHandler(e.clientX, e.clientY); });
+      pad.addEventListener('mouseleave', () => { ripple.style.opacity = '0'; });
+      pad.addEventListener('touchmove', e => {
+        e.preventDefault();
+        moveHandler(e.touches[0].clientX, e.touches[0].clientY);
+      }, { passive: false });
+      pad.addEventListener('touchend', () => { ripple.style.opacity = '0'; });
+    }
+    bindTouchpad('main-touchpad', 'tp-ripple', 'tp-coords');
+    bindTouchpad('mini-touchpad-area', 'mini-tp-ripple', null);
+
+    // 13. Keyboard Flat Key & Sticky Modifier Logic
+    function pressKey(key) {
+      const locked = Array.from(document.querySelectorAll('.flat-key.sticky-locked'))
+        .map(el => el.dataset.mod)
+        .filter((v, i, a) => v && a.indexOf(v) === i);
+      const combo = locked.length ? locked.join(' + ') + ' + ' + key : key;
+      const log = document.getElementById('kb-output-log');
+      if (log) log.textContent = '已发送: ' + combo;
+      showToast('按键: ' + combo);
+    }
+
+    function toggleSticky(btn, modName) {
+      btn.dataset.mod = modName;
+      btn.classList.toggle('sticky-locked');
+      const isLocked = btn.classList.contains('sticky-locked');
+      showToast(modName + (isLocked ? ' 已锁定 (Sticky)' : ' 已释放'));
+    }
+
+    function toggleT9Mode() {
+      isT9Mode = !isT9Mode;
+      document.getElementById('kb-qwerty-grid').classList.toggle('hidden', isT9Mode);
+      document.getElementById('kb-t9-grid').classList.toggle('hidden', !isT9Mode);
+      document.getElementById('toggle-t9-btn').textContent = isT9Mode ? '切全键盘' : '切换9键';
+      document.getElementById('toggle-t9-btn').classList.toggle('sticky-locked', isT9Mode);
+    }
+
+    function triggerScreenshot() {
+      const toast = document.getElementById('kb-screenshot-toast');
+      toast.classList.remove('opacity-0', '-translate-y-4', 'pointer-events-none');
+      clearTimeout(screenshotTimer);
+      screenshotTimer = setTimeout(hideScreenshotToast, 3600);
+    }
+
+    function hideScreenshotToast() {
+      const toast = document.getElementById('kb-screenshot-toast');
+      toast.classList.add('opacity-0', '-translate-y-4', 'pointer-events-none');
+    }
+
+    // 14. Landscape Fullscreen Floating Mini Touchpad Toggle
+    function toggleMiniTouchpad() {
+      const pop = document.getElementById('mini-touchpad-popover');
+      const btn = document.getElementById('mini-tp-toggle-btn');
+      const isHidden = pop.classList.contains('hidden');
+      pop.classList.toggle('hidden', !isHidden);
+      btn.classList.toggle('neu-btn-accent', isHidden);
+    }
+  </script>
+</body>
+</html>

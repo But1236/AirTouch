@@ -1,7 +1,14 @@
 # AirTouch Android 客户端
 
+> **重要（UI 重构后）**：客户端只有一套 Jetpack Compose 界面，入口是
+> `app/src/main/java/com/airtouch/app/ui/redesign/RedesignActivity.kt`（唯一 Activity / 唯一 LAUNCHER）。
+> 旧版 `PairingActivity` / `ControlActivity` / 三个 Fragment / 全部 `res/layout` / 旧 drawable
+> 已整体删除；扫码直接内嵌在新版主页的 1:1 CameraX 取景框里。
+> 本文 §7「代码结构」描述的是**重构前**的 View/XML 结构，仅作历史参考；当前结构见
+> `app/src/main/java/com/airtouch/app/ui/redesign/README.md`。协议、认证、传感器底层逻辑未变。
+
 把手机当作电脑的外设：**鼠标**（3D 陀螺仪姿态 / 2D 桌面平移）+ **触摸板**（单指移动、双指滚动）+ **键盘**
-（QWERTY / 九键拼音中文 / 横屏完整 104 键）+ 文件双向传输。配套的 Windows 服务端在 `../server/`，
+（QWERTY / 九键 / 横屏完整 104 键）+ 文件双向传输。配套的 Windows 服务端在 `../server/`，
 通信协议以 `../docs/PROTOCOL.md`（v2）为唯一事实来源。
 
 ---

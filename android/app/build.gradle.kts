@@ -16,6 +16,19 @@ android {
         versionName = "2.0.3"
     }
 
+    signingConfigs {
+        // 命令行/沙箱构建若无权写 ~/.android/debug.keystore，可用此环境变量指向一份固定的
+        // debug 密钥库；未设置时完全保持 AGP 默认行为，Android Studio 常规构建不受影响。
+        getByName("debug") {
+            System.getenv("AIRTOUCH_DEBUG_KEYSTORE")?.let { path ->
+                storeFile = file(path)
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
         release {
             // 不开启混淆压缩，避免在无编译环境时引入额外风险；规则文件仍然提供。
@@ -29,7 +42,13 @@ android {
     }
 
     buildFeatures {
-        viewBinding = true
+        // 旧版 View/XML 界面已整体删除，只保留 Jetpack Compose 版控制台。
+        compose = true
+    }
+
+    // Kotlin 1.9.24 对应 Compose Compiler 1.5.14（未使用 Kotlin 2.0 的 compose 插件）。
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.14"
     }
 
     compileOptions {
@@ -64,6 +83,15 @@ dependencies {
 
     implementation("com.google.zxing:core:3.5.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // ---- 第一步：Jetpack Compose（仅用于 ui/redesign/ 静态重构页与 @Preview）----
+    // 显式锁定版本，避免 BOM 带来的额外解析；全部与 Compose Compiler 1.5.14 兼容。
+    implementation("androidx.compose.ui:ui:1.6.7")
+    implementation("androidx.compose.ui:ui-tooling-preview:1.6.7")
+    implementation("androidx.compose.foundation:foundation:1.6.7")
+    implementation("androidx.compose.material3:material3:1.2.1")
+    implementation("androidx.activity:activity-compose:1.9.1")
+    debugImplementation("androidx.compose.ui:ui-tooling:1.6.7")
 
     // 说明：PinnedTrust 直接使用平台自带的 java.net.ssl / javax.net.ssl，
     // 不引入 okhttp-tls，以减少依赖面（okhttp-tls 需要额外确认 OkHttp 版本兼容性）。

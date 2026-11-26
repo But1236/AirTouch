@@ -39,6 +39,7 @@ public static class Program
         RunGuardPolicyTests(reporter);
         RunFileNameTests(reporter);
         RunProtocolTests(reporter);
+        RunZoomGestureTests(reporter, workspace);
         RunCertificateTests(reporter, workspace);
         var useTls = await ProbeTlsAsync(reporter, workspace);
         await RunEndToEndTests(reporter, workspace, useTls);
@@ -348,6 +349,16 @@ public static class Program
         reporter.Check("解析 click left", Protocol.Parse("""{"type":"click","button":"left"}""") is { Kind: MessageKind.Click, Button: MouseButton.Left });
         reporter.Check("解析 click right", Protocol.Parse("""{"type":"click","button":"right"}""") is { Kind: MessageKind.Click, Button: MouseButton.Right });
         reporter.Check("click 缺省为左键", Protocol.Parse("""{"type":"click"}""") is { Button: MouseButton.Left });
+
+        // ---- button 帧（docs/PROTOCOL.md §2.1）：一次鼠标按键状态变化，拖拽就靠它
+        reporter.Check("解析 button 左键按下",
+            Protocol.Parse("""{"type":"button","button":"left","down":true}""") is
+            { Kind: MessageKind.Button, Button: MouseButton.Left, ButtonDown: true });
+        reporter.Check("解析 button 右键抬起",
+            Protocol.Parse("""{"type":"button","button":"right","down":false}""") is
+            { Kind: MessageKind.Button, Button: MouseButton.Right, ButtonDown: false });
+        reporter.Check("button 缺 down 时按「抬起」处理（卡住的鼠标键比卡住的按键更糟）",
+            Protocol.Parse("""{"type":"button"}""") is { Kind: MessageKind.Button, ButtonDown: false });
         reporter.Check("解析 scroll 并截断", Protocol.Parse("""{"type":"scroll","amount":5000}""") is { Kind: MessageKind.Scroll, Amount: Protocol.MaxScrollAmount });
         reporter.Check("解析 reset", Protocol.Parse("""{"type":"reset"}""") is { Kind: MessageKind.Reset });
         reporter.Check("解析 file_header", Protocol.Parse("""{"type":"file_header","fileName":"a.txt","fileSize":1024}""") is { Kind: MessageKind.FileHeader, FileName: "a.txt", FileSize: 1024 });
@@ -430,6 +441,334 @@ public static class Program
             !chineseHeader.Contains('中'));
 
         RunProtocolV2Tests(reporter);
+        RunGestureProtocolTests(reporter);
+    }
+
+    /// <summary>
+    /// The 双指缩放 / 高精度滚动 additions of docs/PROTOCOL.md §2.1: the <c>touch</c> geometry stream and
+    /// the <c>delta</c>/<c>axis</c> fields of <c>scroll</c>.
+    /// </summary>
+    private static void RunGestureProtocolTests(TestReporter reporter)
+    {
+        reporter.Check("解析 touch down（缺省 scale=1.0、dx/dy=0）",
+            Protocol.Parse("""{"type":"touch","phase":"down"}""") is
+            { Kind: MessageKind.Touch, TouchPhase: TouchPhase.Down, Scale: 1.0, Dx: 0, Dy: 0 });
+        reporter.Check("解析 touch move（相对 scale + 手势中心位移）",
+            Protocol.Parse("""{"type":"touch","phase":"move","scale":1.35,"dx":-4,"dy":2}""") is
+            { Kind: MessageKind.Touch, TouchPhase: TouchPhase.Move, Scale: 1.35, Dx: -4, Dy: 2 });
+        reporter.Check("解析 touch up",
+            Protocol.Parse("""{"type":"touch","phase":"up"}""") is { Kind: MessageKind.Touch, TouchPhase: TouchPhase.Up });
+        reporter.Check("touch 的 phase 不是 down/move/up 时整帧被忽略（缺字段 / 拼错 / 给数字 / null 都一样）",
+            Protocol.Parse("""{"type":"touch"}""") is null &&
+            Protocol.Parse("""{"type":"touch","phase":"pinch"}""") is null &&
+            Protocol.Parse("""{"type":"touch","phase":1}""") is null &&
+            Protocol.Parse("""{"type":"touch","phase":null}""") is null);
+        reporter.Check("touch 的 phase 大小写不敏感（与 type 同规则）",
+            Protocol.Parse("""{"type":"touch","phase":"DOWN"}""") is { TouchPhase: TouchPhase.Down });
+        reporter.Check($"touch 的 scale 截断到 [{Protocol.MinScale}, {Protocol.MaxScale}]",
+            Protocol.Parse("""{"type":"touch","phase":"move","scale":999}""") is { Scale: Protocol.MaxScale } &&
+            Protocol.Parse("""{"type":"touch","phase":"move","scale":0}""") is { Scale: Protocol.MinScale });
+        reporter.Check("touch 的 scale 非数字按 1.0（按 0 会让一次捏合变成缩到最小）",
+            Protocol.Parse("""{"type":"touch","phase":"move","scale":"abc"}""") is { Scale: 1.0 } &&
+            Protocol.Parse("""{"type":"touch","phase":"move","scale":null}""") is { Scale: 1.0 });
+        reporter.Check("touch 的 dx/dy 截断到 ±4096",
+            Protocol.Parse("""{"type":"touch","phase":"move","dx":99999,"dy":-99999}""") is
+            { Dx: Protocol.MaxMoveStep, Dy: -Protocol.MaxMoveStep });
+
+        reporter.Check("scroll 的 delta 存在时优先于 amount（amount 仍然解析出来）",
+            Protocol.Parse("""{"type":"scroll","delta":15,"amount":3}""") is
+            { Kind: MessageKind.Scroll, Amount: 3, ScrollDelta: 15, ScrollAxis: ScrollAxis.Vertical });
+        reporter.Check("scroll 的 axis:\"h\" 走横向滚轮（MOUSEEVENTF_HWHEEL）",
+            Protocol.Parse("""{"type":"scroll","delta":-20,"axis":"h"}""") is
+            { ScrollDelta: -20, ScrollAxis: ScrollAxis.Horizontal });
+        reporter.Check("scroll 的 axis 其它值按纵向处理",
+            Protocol.Parse("""{"type":"scroll","delta":15,"axis":"x"}""") is { ScrollAxis: ScrollAxis.Vertical });
+        reporter.Check($"scroll 的 delta 截断到 ±{Protocol.MaxScrollDelta}",
+            Protocol.Parse("""{"type":"scroll","delta":99999}""") is { ScrollDelta: Protocol.MaxScrollDelta } &&
+            Protocol.Parse("""{"type":"scroll","delta":-99999}""") is { ScrollDelta: -Protocol.MaxScrollDelta });
+        reporter.Check("老客户端的 scroll 语义不变（没有 delta，交给服务端按 amount*120 换算）",
+            Protocol.Parse("""{"type":"scroll","amount":3}""") is
+            { Kind: MessageKind.Scroll, Amount: 3, ScrollDelta: null });
+
+        // --- zoom_mode / zoom_probe / zoom_status（docs/PROTOCOL.md §2.1）：缩放偏好与运行期热重探
+        reporter.Check("解析 zoom_mode 的三种偏好（auto / native / wheel）",
+            Protocol.Parse("""{"type":"zoom_mode","mode":"auto"}""") is
+            { Kind: MessageKind.ZoomMode, ZoomPreference: ZoomMode.Auto } &&
+            Protocol.Parse("""{"type":"zoom_mode","mode":"native"}""") is
+            { Kind: MessageKind.ZoomMode, ZoomPreference: ZoomMode.NativeTouch } &&
+            Protocol.Parse("""{"type":"zoom_mode","mode":"wheel"}""") is
+            { Kind: MessageKind.ZoomMode, ZoomPreference: ZoomMode.WheelFallback });
+        reporter.Check("zoom_mode 的 mode 大小写不敏感（与 type / phase 同规则）",
+            Protocol.Parse("""{"type":"zoom_mode","mode":"NATIVE"}""") is { ZoomPreference: ZoomMode.NativeTouch } &&
+            Protocol.Parse("""{"type":"zoom_mode","mode":"Wheel"}""") is { ZoomPreference: ZoomMode.WheelFallback });
+        reporter.Check("zoom_mode 的 mode 非法时整帧被忽略（缺字段 / 拼错 / 给数字 / null 都一样）",
+            Protocol.Parse("""{"type":"zoom_mode"}""") is null &&
+            Protocol.Parse("""{"type":"zoom_mode","mode":"weel"}""") is null &&
+            Protocol.Parse("""{"type":"zoom_mode","mode":1}""") is null &&
+            Protocol.Parse("""{"type":"zoom_mode","mode":null}""") is null);
+        reporter.Check("解析 zoom_probe（没有字段，语义就是「现在立刻重新探测一次」）",
+            Protocol.Parse("""{"type":"zoom_probe"}""") is { Kind: MessageKind.ZoomProbe, RawType: "zoom_probe" });
+
+        var sampleStatus = new ZoomStatus(
+            ZoomMode.NativeTouch,
+            ZoomBackend.CtrlWheelFallback,
+            new TouchCapability(false, "本机没有触摸数字化仪", 0, 0, 0, 0, DateTimeOffset.Now));
+        var statusJson = Protocol.BuildZoomStatus(sampleStatus);
+        reporter.Check("zoom_status 的字段与取值：mode 是**生效**的后端、preference 是偏好、reason 在不可用时非空",
+            TestJson.GetString(statusJson, "type") == "zoom_status" &&
+            TestJson.GetString(statusJson, "mode") == "ctrl_wheel_fallback" &&
+            TestJson.GetBool(statusJson, "available") == false &&
+            TestJson.GetString(statusJson, "reason") == "本机没有触摸数字化仪" &&
+            TestJson.GetString(statusJson, "preference") == "native" &&
+            TestJson.GetLong(statusJson, "maxTouches") == 0 &&
+            TestJson.GetLong(statusJson, "digitizer") == 0,
+            statusJson);
+
+        var welcomeJson = Protocol.BuildWelcome("1.0.0", "127.0.0.1", "sid-test", 60, "keyid", "pair", sampleStatus);
+        reporter.Check("welcome 带初始缩放快照（zoomMode/zoomAvailable/zoomReason/zoomPreference，重连后第一帧就是对的）",
+            TestJson.GetString(welcomeJson, "zoomMode") == "ctrl_wheel_fallback" &&
+            TestJson.GetBool(welcomeJson, "zoomAvailable") == false &&
+            TestJson.GetString(welcomeJson, "zoomReason") == "本机没有触摸数字化仪" &&
+            TestJson.GetString(welcomeJson, "zoomPreference") == "native",
+            welcomeJson);
+        reporter.Check("不带快照时 welcome 不出现缩放字段（老调用点行为不变）",
+            TestJson.GetString(Protocol.BuildWelcome("1.0.0", "127.0.0.1", "sid-test", 60, "keyid", "pair"), "zoomMode") is null);
+    }
+
+    /// <summary>
+    /// 双指缩放：能力探测、后端选择（偏好 × 能力）、两个后端的注入行为，以及运行期热切换
+    /// （docs/PROTOCOL.md §2.1）。
+    /// </summary>
+    /// <remarks>
+    /// 本机（以及绝大多数台式机）没有触控栈，真实触控注入必然一路 ERROR_INVALID_PARAMETER，所以触控
+    /// 后端由<em>真实</em>控制器代码 + 记录型注入器驱动：状态机、几何、屏幕钳制、热切换全是产品代码，
+    /// 只有最底层那一次 InjectTouchInput 被换成记录。回退后端同样跑真实换算代码，注入目标是记录型鼠标/
+    /// 键盘 —— 自检绝不能真的往用户桌面注入 Ctrl+滚轮（那会缩放用户当前的前台窗口）。
+    /// </remarks>
+    private static void RunZoomGestureTests(TestReporter reporter, string workspace)
+    {
+        reporter.Section("双指缩放（能力探测 / 后端选择 / 运行期热切换）");
+
+        // --- 真实能力探测：SM_DIGITIZER / SM_MAXIMUMTOUCHES
+        var probeManager = new Win32VirtualTouchManager(NullLog.Instance);
+        var capability = probeManager.Capability;
+        reporter.Info(
+            $"SM_DIGITIZER={capability.Digitizer}，SM_MAXIMUMTOUCHES={capability.MaximumTouches}，" +
+            $"InitializeTouchInjection 错误码={capability.InitializeError}，接触点={capability.ContactCount}");
+        reporter.Check("能力探测给出明确结论：可用，或给出可读的回退原因",
+            capability.Available ? capability.Reason.Length == 0 : capability.Reason.Length > 0,
+            capability.Available ? "触控注入可用" : capability.Reason);
+        reporter.Check("没有触摸栈时绝不报告「初始化成功」（SM_MAXIMUMTOUCHES=0 直接判定不可用，连初始化都不调）",
+            capability.MaximumTouches != 0 || !capability.Available,
+            $"SM_MAXIMUMTOUCHES={capability.MaximumTouches}");
+        reporter.Check("探测结果带原始指标与探测时间（窗口与 zoom_status 都靠它诊断）",
+            capability.ProbedAt > DateTimeOffset.Now.AddMinutes(-1) && capability.ProbedAt <= DateTimeOffset.Now &&
+            (capability.Available
+                ? capability.ContactCount == Win32VirtualTouchManager.MaxContacts
+                : capability.ContactCount == 0),
+            $"接触点={capability.ContactCount}，探测时间={capability.ProbedAt:HH:mm:ss}");
+
+        var sizes = Win32TouchContactInjector.MarshalledStructSizes();
+        reporter.Check("注入结构体尺寸与 C 头文件一致（96 / 144 / 152；尺寸错了必然 ERROR_INVALID_PARAMETER）",
+            sizes == (96, 144, 152), $"{sizes.PointerInfo} / {sizes.TouchInfo} / {sizes.TypeInfo}");
+
+        // --- 后端选择规则：偏好 × 能力 → **实际生效**的后端
+        var autoUnavailable = new RecordingVirtualTouchManager(TouchCapability.Unavailable("自检：本机没有触控栈"));
+        reporter.Check("自动偏好 + 没有触控栈 → 实际后端是 Ctrl+滚轮回退",
+            autoUnavailable.Status is { Preference: ZoomMode.Auto, Backend: ZoomBackend.CtrlWheelFallback } &&
+            !autoUnavailable.Status.Capability.Available);
+        var autoAvailable = new RecordingVirtualTouchManager(TouchCapability.Ready());
+        reporter.Check("自动偏好 + 有触控栈 → 实际后端是原生触控",
+            autoAvailable.Status is { Preference: ZoomMode.Auto, Backend: ZoomBackend.NativeTouch });
+        var preferNative = new RecordingVirtualTouchManager(TouchCapability.Unavailable("自检：本机没有触控栈"));
+        preferNative.Mode = ZoomMode.NativeTouch;
+        reporter.Check("「优先原生触控」在本机不可用时照样回退，并如实报告不可用（available=false、reason 非空）",
+            preferNative.Status is { Preference: ZoomMode.NativeTouch, Backend: ZoomBackend.CtrlWheelFallback } &&
+            !preferNative.Status.Capability.Available && preferNative.Status.Capability.Reason.Length > 0);
+        var forceWheel = new RecordingVirtualTouchManager(TouchCapability.Ready());
+        forceWheel.Mode = ZoomMode.WheelFallback;
+        reporter.Check("「强制滚轮」在有触控栈的机器上也用滚轮，但可用性仍然如实为 true",
+            forceWheel.Status is { Preference: ZoomMode.WheelFallback, Backend: ZoomBackend.CtrlWheelFallback } &&
+            forceWheel.Status.Capability.Available);
+
+        var statusEvents = 0;
+        autoAvailable.StatusChanged += (_, _) => statusEvents++;
+        autoAvailable.Mode = ZoomMode.WheelFallback;
+        autoAvailable.Mode = ZoomMode.WheelFallback;
+        reporter.Check("偏好变更触发且只触发一次 StatusChanged（服务端据此立刻推 zoom_status；重复设置不打扰手机）",
+            statusEvents == 1 && autoAvailable.Events.Contains("mode wheel"),
+            $"事件 {statusEvents} 次，记录：{string.Join(" | ", autoAvailable.Events)}");
+
+        // --- 回退后端：真实换算代码 + 记录型鼠标/键盘
+        var mouse = new RecordingMouseController();
+        var keyboard = new RecordingKeyboardController();
+        var fallbackManager = new RecordingVirtualTouchManager(
+            TouchCapability.Unavailable("自检强制回退（避免在真有触摸屏的机器上注入真实触点）"));
+        var zoom = new Win32ZoomGestureController(
+            mouse,
+            keyboard,
+            NullLog.Instance,
+            fallbackManager,
+            new RecordingTouchInjector());
+
+        reporter.Check("强制回退时报告不可用并给出中文原因",
+            !zoom.Available && zoom.UnavailableReason.Length > 0, zoom.UnavailableReason);
+        reporter.Check("不可用时的生效后端就是滚轮回退（控制器与 manager 的口径一致）",
+            zoom.Backend == ZoomBackend.CtrlWheelFallback &&
+            zoom.Status is { Backend: ZoomBackend.CtrlWheelFallback, Preference: ZoomMode.Auto });
+
+        // 12% 的间距变化 = 恰好一格（120 单位）
+        zoom.TouchBegin();
+        zoom.TouchMove(1.12, 0, 0);
+        zoom.TouchEnd();
+        reporter.Check("回退恰好是一组 Ctrl down → 滚轮 → Ctrl up（每次注入自成一体）",
+            mouse.Events.SequenceEqual(new[] { "scroll v 120" }) &&
+            keyboard.Events.SequenceEqual(new[] { "key 162 down", "key 162 up" }),
+            $"鼠标：{string.Join(" | ", mouse.Events)}；键盘：{string.Join(" | ", keyboard.Events)}");
+
+        // 高精度：1% 的间距变化只有 9 个单位（远小于一格），亚单位的变化留到下一帧累加
+        zoom.TouchBegin();
+        zoom.TouchMove(1.12, 0, 0);
+        zoom.TouchMove(1.13, 0, 0);
+        zoom.TouchMove(1.131, 0, 0);
+        zoom.TouchEnd();
+        var fine = mouse.Events.Skip(1).ToArray();
+        reporter.Check("高精度：1% 间距变化只滚 9 个单位，0.09% 的变化累加成一帧 1 个单位",
+            fine.SequenceEqual(new[] { "scroll v 120", "scroll v 9", "scroll v 1" }),
+            string.Join(" | ", fine));
+
+        // 快速捏合：单帧最多一格，剩余量留到后续帧而不是一次性跳过去
+        zoom.TouchBegin();
+        zoom.TouchMove(20.0, 0, 0);
+        zoom.TouchMove(20.0, 0, 0);
+        zoom.TouchEnd();
+        var burst = mouse.Events.Skip(4).ToArray();
+        reporter.Check("每帧最多滚一格（一次 20 倍的捏合不会跳变，剩余量留到后续帧）",
+            burst.SequenceEqual(new[] { "scroll v 120", "scroll v 120" }),
+            string.Join(" | ", burst));
+
+        reporter.Check("Ctrl 从不被长时间按住：每一次注入之后都已经抬起（没有卡住的 Ctrl）",
+            keyboard.HeldKeyCount == 0 &&
+            keyboard.Events.Count(e => e == "key 162 down") == keyboard.Events.Count(e => e == "key 162 up"),
+            $"held={keyboard.HeldKeyCount}，键盘事件 {keyboard.Events.Count} 条");
+
+        zoom.TouchBegin();
+        zoom.ReleaseAll();
+        reporter.Check("ReleaseAll 在捏合中途被调用（断线/复位路径）后不留任何按住的 Ctrl",
+            keyboard.HeldKeyCount == 0, $"held={keyboard.HeldKeyCount}");
+
+        // --- 原生触控后端：真实几何状态机 + 记录型注入器
+        var nativeMouse = new RecordingMouseController();
+        nativeMouse.Move(300, 200); // 先把「光标」放到屏幕中间偏左，坐标才不会被屏幕钳制改写
+        var nativeKeyboard = new RecordingKeyboardController();
+        var nativeInjector = new RecordingTouchInjector();
+        var nativeZoom = new Win32ZoomGestureController(
+            nativeMouse,
+            nativeKeyboard,
+            NullLog.Instance,
+            new RecordingVirtualTouchManager(TouchCapability.Ready()),
+            nativeInjector);
+
+        nativeZoom.TouchBegin();
+        nativeZoom.TouchMove(1.35, 0, 0);
+        nativeZoom.TouchEnd();
+        reporter.Check("触控后端：down 在光标两侧各放一个触点（间距 240），move 按 scale 张开到 324，up 用与末帧完全相同的坐标",
+            nativeInjector.Events.SequenceEqual(new[]
+            {
+                "touch down (180,200)-(420,200)",
+                "touch move (138,200)-(462,200)",
+                "touch up (138,200)-(462,200)",
+            }) &&
+            nativeZoom.TouchInjectionFailures == 0 &&
+            nativeKeyboard.Events.Count == 0,
+            string.Join(" | ", nativeInjector.Events));
+
+        // --- 注入被系统拒绝：记账 + 打日志，绝不抛异常（error 87 正是没有触控栈时的真实症状）
+        var failingInjector = new RecordingTouchInjector { FailWithError = 87 };
+        var failingZoom = new Win32ZoomGestureController(
+            new RecordingMouseController(),
+            new RecordingKeyboardController(),
+            NullLog.Instance,
+            new RecordingVirtualTouchManager(TouchCapability.Ready()),
+            failingInjector);
+        failingZoom.TouchBegin();
+        failingZoom.TouchMove(1.2, 0, 0);
+        failingZoom.TouchEnd();
+        reporter.Check("触控注入被系统拒绝时只计数、不抛异常，也不影响后续帧",
+            failingZoom.TouchInjectionFailures == 3 &&
+            failingInjector.Events.All(frame => frame.Contains("failed 87", StringComparison.Ordinal)),
+            $"{failingZoom.TouchInjectionFailures} 次失败：{string.Join(" | ", failingInjector.Events)}");
+
+        // --- 运行期热切换：不重启服务端、不断开手机，重探一次就换后端
+        //
+        // 这正是热切换的落点：SM_MAXIMUMTOUCHES 起初是 0（本机没有触控数字化仪），插上触控屏后重探
+        // 变成 >0，同一个控制器实例的下一次手势就必须改走 InjectTouchInput。
+        var hotManager = new RecordingVirtualTouchManager(TouchCapability.Unavailable("热切换自检：一开始没有触控栈"));
+        var hotMouse = new RecordingMouseController();
+        var hotKeyboard = new RecordingKeyboardController();
+        var hotInjector = new RecordingTouchInjector();
+        var hotZoom = new Win32ZoomGestureController(hotMouse, hotKeyboard, NullLog.Instance, hotManager, hotInjector);
+
+        hotZoom.TouchBegin();
+        hotZoom.TouchMove(1.12, 0, 0);
+        reporter.Check("热切换前：触控不可用 → 手势走滚轮注入，触控注入器一次都没被调用",
+            hotInjector.InjectionCount == 0 && hotMouse.Events.SequenceEqual(new[] { "scroll v 120" }),
+            $"触控 {hotInjector.InjectionCount} 帧；鼠标 {string.Join(" | ", hotMouse.Events)}");
+
+        // 触控屏插上了 → 手机发 zoom_probe（或窗口点「重新检测触控能力」）：同一个 manager 重新探测
+        hotManager.SimulateCapability(TouchCapability.Ready(maximumTouches: 10));
+        hotManager.Refresh();
+
+        var scrollsAtSwitch = hotMouse.Events.Count;
+        var touchFramesAtSwitch = hotInjector.InjectionCount;
+        hotZoom.TouchMove(1.12, 0, 0); // 手势在切换瞬间已被收尾：这一帧必须被忽略
+        var ignoredInFlight = hotMouse.Events.Count == scrollsAtSwitch && hotInjector.InjectionCount == touchFramesAtSwitch;
+        var switchedToNative = hotManager.RefreshCount == 1 && hotManager.Status.Backend == ZoomBackend.NativeTouch;
+
+        hotZoom.TouchBegin();
+        hotZoom.TouchMove(1.2, 0, 0);
+        hotZoom.TouchEnd();
+        var nativeFrames = hotInjector.Events.ToArray();
+
+        reporter.Check("热切换（不可用 → 可用）把进行中的手势收尾：换后端之后旧手势的 move 不再注入任何后端",
+            switchedToNative && ignoredInFlight,
+            $"鼠标新增 {hotMouse.Events.Count - scrollsAtSwitch} 条，触控新增 {hotInjector.InjectionCount - touchFramesAtSwitch} 帧");
+        reporter.Check("热切换之后同一个控制器实例的下一次手势改走原生触控（down → move → up 全在触控注入器里）",
+            nativeFrames.Length == 3 &&
+            nativeFrames[0].StartsWith("touch down", StringComparison.Ordinal) &&
+            nativeFrames[1].StartsWith("touch move", StringComparison.Ordinal) &&
+            nativeFrames[2].StartsWith("touch up", StringComparison.Ordinal) &&
+            hotMouse.Events.Count == scrollsAtSwitch &&
+            hotZoom.TouchInjectionFailures == 0,
+            string.Join(" | ", nativeFrames));
+
+        // 反向：窗口里选「强制滚轮」→ 先把按着的两个虚拟触点收干净，再换后端
+        var releasesBeforeSwitchBack = hotInjector.Events.Count(frame =>
+            frame.StartsWith("touch up", StringComparison.Ordinal) || frame.StartsWith("touch cancel", StringComparison.Ordinal));
+        hotZoom.TouchBegin();
+        hotZoom.TouchMove(1.2, 0, 0);
+        var scrollsBeforeSwitchBack = hotMouse.Events.Count;
+        hotManager.Mode = ZoomMode.WheelFallback; // 有触控栈，但用户强制滚轮
+
+        var releasedOnSwitchBack = hotInjector.Events.Count(frame =>
+            frame.StartsWith("touch up", StringComparison.Ordinal) || frame.StartsWith("touch cancel", StringComparison.Ordinal)) ==
+            releasesBeforeSwitchBack + 1;
+        hotZoom.TouchMove(1.2, 0, 0); // 被打断的手势：不该滚
+        var ignoredAfterSwitchBack = hotMouse.Events.Count == scrollsBeforeSwitchBack;
+
+        hotZoom.TouchBegin();
+        hotZoom.TouchMove(1.12, 0, 0);
+        hotZoom.TouchEnd();
+        var wheelAfterSwitchBack = hotMouse.Events.Skip(scrollsBeforeSwitchBack).ToArray();
+
+        reporter.Check("反向热切换（可用 → 强制滚轮）先把按着的虚拟触点抬起来，再换后端",
+            releasedOnSwitchBack,
+            string.Join(" | ", hotInjector.Events));
+        reporter.Check("反向热切换后：旧手势被忽略，新手势按滚轮后端注入，且没留下按住的 Ctrl",
+            ignoredAfterSwitchBack &&
+            wheelAfterSwitchBack.SequenceEqual(new[] { "scroll v 120" }) &&
+            hotKeyboard.HeldKeyCount == 0,
+            $"切换后滚轮 {string.Join(" | ", wheelAfterSwitchBack)}；held={hotKeyboard.HeldKeyCount}");
     }
 
     /// <summary>
@@ -607,7 +946,12 @@ public static class Program
         var log = new AirTouchLog(dataDir);
         var mouse = new RecordingMouseController();
         var keyboard = new RecordingKeyboardController();
-        using var server = new AirTouchServer(options, mouse, log, keyboard);
+        var zoom = new RecordingZoomGestureController();
+
+        // 缩放状态由 manager 出（welcome 快照 + zoom_status），记录型缩放控制器只负责记录手势派发。
+        var virtualTouch = new RecordingVirtualTouchManager(
+            TouchCapability.Unavailable("端到端自检：本机没有触控栈"));
+        using var server = new AirTouchServer(options, mouse, log, keyboard, zoom, virtualTouch);
 
         var received = new List<FileTransferResult>();
         server.FileReceived += (_, result) =>
@@ -669,6 +1013,53 @@ public static class Program
         reporter.Equal("welcome 宣告协议版本 2", 2, (int)TestJson.GetLong(welcome!.Text!, "protocolVersion"));
         reporter.Equal("welcome 回显设备 keyId", deviceA.KeyId, TestJson.GetString(welcome.Text!, "keyId"));
         reporter.Equal("welcome 认证方式为 pair", "pair", TestJson.GetString(welcome.Text!, "authMode"));
+
+        // --- 缩放状态（docs/PROTOCOL.md §2.1）：welcome 快照 + 紧跟的 zoom_status，手机重连后第一帧就是对的
+        reporter.Check("welcome 带初始缩放快照（重连后不必等第二帧才知道用哪种后端）",
+            TestJson.GetString(welcome.Text!, "zoomMode") == "ctrl_wheel_fallback" &&
+            TestJson.GetBool(welcome.Text!, "zoomAvailable") == false &&
+            TestJson.GetString(welcome.Text!, "zoomPreference") == "auto" &&
+            !string.IsNullOrEmpty(TestJson.GetString(welcome.Text!, "zoomReason")),
+            welcome.Text!);
+
+        var zoomStatusAfterWelcome = await WaitForFrameAsync(client, frame => frame.MessageType == "zoom_status", ShortWait);
+        reporter.Check("welcome 之后紧跟一帧 zoom_status（与服务端状态一致：滚轮回退、不可用、auto）",
+            zoomStatusAfterWelcome is not null &&
+            TestJson.GetString(zoomStatusAfterWelcome.Text!, "mode") == "ctrl_wheel_fallback" &&
+            TestJson.GetBool(zoomStatusAfterWelcome.Text!, "available") == false &&
+            TestJson.GetString(zoomStatusAfterWelcome.Text!, "preference") == "auto" &&
+            TestJson.GetLong(zoomStatusAfterWelcome.Text!, "maxTouches") == 0,
+            zoomStatusAfterWelcome?.Text ?? "没有收到 zoom_status");
+
+        await client.SendTextAsync("""{"type":"zoom_mode","mode":"wheel"}""");
+        var zoomStatusAfterMode = await WaitForFrameAsync(client, frame => frame.MessageType == "zoom_status", ShortWait);
+        reporter.Check("手机改缩放偏好后立刻收到 zoom_status（preference 回显 wheel、mode 仍是生效后端）",
+            zoomStatusAfterMode is not null &&
+            TestJson.GetString(zoomStatusAfterMode.Text!, "preference") == "wheel" &&
+            TestJson.GetString(zoomStatusAfterMode.Text!, "mode") == "ctrl_wheel_fallback",
+            zoomStatusAfterMode?.Text ?? "没有收到 zoom_status");
+        reporter.Check("手机与窗口共享同一份缩放状态（服务端状态同步为 wheel）",
+            server.GetStatus().ZoomPreference == "wheel" &&
+            server.GetStatus().ZoomBackend == "ctrl_wheel_fallback" &&
+            !server.GetStatus().ZoomTouchAvailable,
+            $"preference={server.GetStatus().ZoomPreference}，backend={server.GetStatus().ZoomBackend}");
+
+        await client.SendTextAsync("""{"type":"zoom_probe"}""");
+        var zoomStatusAfterProbe = await WaitForFrameAsync(client, frame => frame.MessageType == "zoom_status", ShortWait);
+        reporter.Check("zoom_probe 即使结论没变也回一帧 zoom_status，并真的重探了一次",
+            zoomStatusAfterProbe is not null &&
+            virtualTouch.RefreshCount == 1 &&
+            TestJson.GetString(zoomStatusAfterProbe.Text!, "preference") == "wheel",
+            $"RefreshCount={virtualTouch.RefreshCount}；{zoomStatusAfterProbe?.Text ?? "没有收到 zoom_status"}");
+
+        var modeEventsBefore = virtualTouch.Events.Count(e => e.StartsWith("mode ", StringComparison.Ordinal));
+        await client.SendTextAsync("""{"type":"zoom_mode","mode":"weel"}""");
+        await client.SendTextAsync("""{"type":"zoom_mode","mode":1}""");
+        await Task.Delay(150);
+        reporter.Check("非法的 zoom_mode 整帧忽略（拼错一个字母、给成数字都不改偏好）",
+            virtualTouch.Events.Count(e => e.StartsWith("mode ", StringComparison.Ordinal)) == modeEventsBefore &&
+            server.GetStatus().ZoomPreference == "wheel",
+            string.Join(" | ", virtualTouch.Events));
 
         reporter.Check("配对的公钥已入库", server.TrustedDevices.Any(d => d.KeyId == deviceA.KeyId));
         reporter.Check("配对后 token 被销毁", server.GetStatus().TokenConsumed);
@@ -793,10 +1184,46 @@ public static class Program
             reporter.Equal("move 相对位移正确", "move 10 -5", events[0]);
             reporter.Equal("左键点击", "click left", events[1]);
             reporter.Equal("右键点击", "click right", events[2]);
-            reporter.Equal("滚轮上滚", "scroll 3", events[3]);
+            reporter.Equal("滚轮上滚", "scroll v 360", events[3]);
             reporter.Equal("复位", "reset", events[4]);
             reporter.Equal("move 被截断到上限", $"move {Protocol.MaxMoveStep} 0", events[5]);
         }
+
+        // --- touch 帧（docs/PROTOCOL.md §2.1）：双指捏合的几何流。
+        //
+        // 客户端只发几何量（相对间距倍数 + 手势中心位移），走触控注入还是 Ctrl+滚轮由服务端决定；
+        // 协议里没有「用哪个后端」这种字段，手机端也感知不到。phase 非法的帧整帧忽略。
+        var zoomEventsBefore = zoom.Events.Count;
+        var scrollsBefore = mouse.Events.Count(e => e.StartsWith("scroll ", StringComparison.Ordinal));
+        await client.SendTextAsync("""{"type":"touch","phase":"down"}""");
+        await client.SendTextAsync("""{"type":"touch","phase":"move","scale":1.35,"dx":-4,"dy":2}""");
+        await client.SendTextAsync("""{"type":"touch","phase":"up"}""");
+        await client.SendTextAsync("""{"type":"touch","phase":"pinch"}""");
+        await client.SendTextAsync("""{"type":"scroll","delta":15}""");
+        await client.SendTextAsync("""{"type":"scroll","delta":-20,"axis":"h"}""");
+        await client.SendTextAsync("""{"type":"scroll","amount":3}""");
+
+        var gotGestures = await WaitForAsync(
+            () => zoom.Events.Count == zoomEventsBefore + 3 &&
+                  mouse.Events.Count(e => e.StartsWith("scroll ", StringComparison.Ordinal)) == scrollsBefore + 3,
+            ShortWait);
+
+        var gestureEvents = zoom.Events.Skip(zoomEventsBefore).ToArray();
+        reporter.Check("touch 帧按 down/move/up 派发到缩放控制器（非法 phase 不产生任何调用）",
+            gotGestures &&
+            gestureEvents.SequenceEqual(new[] { "touch down", "touch move scale=1.35 dx=-4 dy=2", "touch up" }),
+            string.Join(" | ", gestureEvents));
+
+        var gestureScrolls = mouse.Events
+            .Where(e => e.StartsWith("scroll ", StringComparison.Ordinal))
+            .Skip(scrollsBefore)
+            .ToArray();
+        reporter.Check("scroll 携带 delta/axis 时原样注入，老客户端的 amount 仍按 3×120=360 换算",
+            gotGestures && gestureScrolls.SequenceEqual(new[] { "scroll v 15", "scroll h -20", "scroll v 360" }),
+            string.Join(" | ", gestureScrolls));
+
+        reporter.Check("touch 指令计数递增", await WaitForAsync(() => server.GetStatus().TouchCommands >= 3, ShortWait),
+            server.GetStatus().TouchCommands.ToString());
 
         // --- key frames（docs/PROTOCOL.md §2.6）
         //
@@ -981,12 +1408,51 @@ public static class Program
             $"{assembled.Length} / {downloadPayload.Length}");
         reporter.Check("收到 file_end", fileEnd is not null);
 
+        // --- button 帧（docs/PROTOCOL.md §2.1）：一次状态变化一条帧，按下之后的一串 move 就是拖拽。
+        //     重复的按下/抬起必须是空操作 —— 手机端丢一帧 up 时，多发的 down 会让按钮再也抬不起来。
+        var buttonEventsBefore = mouse.Events.Count;
+        await client.SendTextAsync("""{"type":"button","button":"left","down":true}""");
+        await client.SendTextAsync("""{"type":"button","button":"left","down":true}""");
+        await client.SendTextAsync("""{"type":"button","button":"left","down":false}""");
+        await client.SendTextAsync("""{"type":"button","button":"left","down":false}""");
+        var gotButton = await WaitForAsync(() => mouse.Events.Count >= buttonEventsBefore + 2, ShortWait);
+        await Task.Delay(200);
+        var buttonEvents = mouse.Events;
+        reporter.Check("button 帧按顺序到达控制器，且重复的按下/抬起是空操作",
+            gotButton && buttonEvents.Count == buttonEventsBefore + 2 &&
+            buttonEvents[buttonEventsBefore] == "button left down" &&
+            buttonEvents[buttonEventsBefore + 1] == "button left up",
+            string.Join(" | ", buttonEvents));
+
+        // --- 断开时必须自己松手：手机可能在拖拽中途被锁屏、被杀掉或掉 Wi-Fi，没有别人会发那一帧
+        //     「抬起」。不释放的话电脑上的左键会一直按着，之后每次移动都在框选。
+        var downsBeforeDisconnect = mouse.Events.Count(e => e == "button left down");
+        await client.SendTextAsync("""{"type":"button","button":"left","down":true}""");
+        var pressedBeforeDisconnect = await WaitForAsync(
+            () => mouse.Events.Count(e => e == "button left down") == downsBeforeDisconnect + 1, ShortWait);
+
+        // 同一次断线里再挂一个没结束的捏合手势（down + move，故意不发 up）：触控后端此时有两个按着的
+        // 虚拟触点，回退后端则可能还缓存着 Ctrl —— 两者都必须随会话结束被收掉。
+        var downsBeforeGesture = zoom.Events.Count(e => e == "touch down");
+        await client.SendTextAsync("""{"type":"touch","phase":"down"}""");
+        await client.SendTextAsync("""{"type":"touch","phase":"move","scale":1.6}""");
+        var gestureInProgress = await WaitForAsync(
+            () => zoom.Events.Count(e => e == "touch down") == downsBeforeGesture + 1 &&
+                  zoom.Events.Count(e => e == "release-all") == 0,
+            ShortWait);
+
         // --- 令牌只与「添加新手机」有关：断开不再轮换，重连压根不用它
         var tokenBeforeDisconnect = server.GetStatus().Token;
         await client.CloseAsync();
         reporter.Check("服务端检测到断开", await WaitForAsync(() => server.GetStatus().ClientAddress is null, ShortWait));
         reporter.Equal("断开后 token 保持不变（避免误伤免扫码重连）",
             tokenBeforeDisconnect, server.GetStatus().Token);
+        reporter.Check("断开时服务端松开仍按下的鼠标左键（拖拽中途掉线不留卡住的按钮）",
+            pressedBeforeDisconnect && await WaitForAsync(() => mouse.Events.Contains("release-all"), ShortWait),
+            string.Join(" | ", mouse.Events));
+        reporter.Check("断开时服务端收起未结束的捏合手势（不留按住的触点，也不留 Ctrl）",
+            gestureInProgress && await WaitForAsync(() => zoom.Events.Contains("release-all"), ShortWait),
+            string.Join(" | ", zoom.Events));
 
         string? lastErrorCode = null;
         for (var attempt = 1; attempt <= options.MaxTokenFailures; attempt++)
@@ -1154,6 +1620,14 @@ public static class Program
 
         var liveStatus = server.GetStatus();
         string Url(string host, string? token) => Protocol.BuildUrl(host, port, token, liveStatus.Sid, liveStatus.CertificatePin, useTls);
+
+        // 服务端在构造时就定下了双指缩放的后端，并把结论带进状态里（窗口据此显示
+        // 「缩放：Ctrl+滚轮（本机无触摸）」）。这里只读结论，不做任何真实触点注入。
+        reporter.Check("服务端状态带出缩放后端结论（不可用时给得出可读原因）",
+            liveStatus.ZoomTouchAvailable || liveStatus.ZoomUnavailableReason.Length > 0,
+            liveStatus.ZoomTouchAvailable ? "触控注入可用（InjectTouchInput）" : liveStatus.ZoomUnavailableReason);
+        reporter.Info(
+            $"双指缩放后端：{(liveStatus.ZoomTouchAvailable ? "InjectTouchInput（真实触点）" : liveStatus.ZoomUnavailableReason)}");
 
         var connectAddress = lanAddress ?? "127.0.0.1";
         var certificateFingerprint = liveStatus.CertificateFingerprint;
@@ -1391,6 +1865,22 @@ public static class Program
                 reporter.Check("窗口暴露证书固定值 fp",
                     (root.GetProperty("certificatePin").GetString() ?? string.Empty).Length == 22);
                 reporter.Equal("窗口报告协议版本 2", 2, root.GetProperty("protocolVersion").GetInt32());
+
+                // --- 缩放模式三选一 + 触控能力状态（docs/PROTOCOL.md §2.1）
+                reporter.Equal("窗口里的缩放模式是三选一（自动 / 优先原生触控 / 强制滚轮）",
+                    3, root.GetProperty("zoomModeChoices").GetInt32());
+                reporter.Check("窗口报告的后端与可用性口径一致（后端只有两种取值，不可用时 reason 必须非空）",
+                    root.GetProperty("zoomBackend").GetString() is "native_touch" or "ctrl_wheel_fallback" &&
+                    root.GetProperty("zoomPreference").GetString() is "auto" or "native" or "wheel" &&
+                    (root.GetProperty("zoomTouchAvailable").GetBoolean() ||
+                     !string.IsNullOrEmpty(root.GetProperty("zoomUnavailableReason").GetString())),
+                    $"后端={root.GetProperty("zoomBackend").GetString()}，偏好={root.GetProperty("zoomPreference").GetString()}");
+                reporter.Check("窗口报告原始触控指标与探测时间（用户能照着这两个数字判断有没有触控数字化仪）",
+                    root.GetProperty("zoomMaximumTouches").GetInt32() >= 0 &&
+                    root.GetProperty("zoomDigitizer").GetInt32() >= 0 &&
+                    !string.IsNullOrEmpty(root.GetProperty("zoomProbedAt").GetString()),
+                    $"SM_MAXIMUMTOUCHES={root.GetProperty("zoomMaximumTouches").GetInt32()}，" +
+                    $"SM_DIGITIZER={root.GetProperty("zoomDigitizer").GetInt32()}");
             }
         }
         catch (Exception ex)

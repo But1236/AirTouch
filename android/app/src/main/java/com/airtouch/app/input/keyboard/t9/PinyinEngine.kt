@@ -38,8 +38,14 @@ object PinyinEngine {
     /** 一个音节切分片段 */
     data class Segment(val digits: String, val chars: String)
 
-    /** 一次最多给几个候选：再多候选条也点不过来，而且会把第一条挤出去 */
-    const val DEFAULT_LIMIT = 8
+    /**
+     * 一次最多给几个候选。
+     *
+     * 原来是 8 —— 用户反馈「词库太少没法拼拼音」：同一个数字串下同音字动辄几十个（`94` = yi/xi/zhi…），
+     * 只给 8 个根本翻不到想打的那个字。候选条本身是横向可滚动的（`T9CandidateBar` 用了
+     * `horizontalScroll`），所以放宽到 24 是纯收益：一屏能看到前几个，往右滑还能继续找。
+     */
+    const val DEFAULT_LIMIT = 24
 
     /** 最长接受多少个数字键：够打六个音节，再长说明用户在乱按 */
     const val MAX_DIGITS = 24
@@ -128,18 +134,32 @@ object PinyinEngine {
                 if (out.size >= limit) break
             }
         } else {
-            // 3. 切成多个音节：前缀取最高频字，末音节逐个列
+            // 3. 切成多个音节：前 n-2 个音节各取最高频字，**最后两个音节做组合**
+            //    （各取前 COMBO_CHARS 个字，按下标和排序）。原来只让最后一个音节变化，
+            //    于是 `64'426`（ni'hao）只能给出「你好/你号/你浩…」—— 第一个字永远是「你」，
+            //    想打「尼豪」「泥嚎」这类就翻不到；现在最后两个字一起组合，候选量立刻够用。
             val segments = segment(dictionary, digits)
             if (segments != null && segments.size >= 2) {
+                val headCount = segments.size - 2
                 val prefix = buildString {
-                    for (i in 0 until segments.size - 1) {
+                    for (i in 0 until headCount) {
                         val top = segments[i].chars.firstOrNull() ?: return@buildString
                         append(top)
                     }
                 }
-                if (prefix.length == segments.size - 1) {
-                    for (ch in segments.last().chars) {
-                        out.add(Candidate(prefix + ch, Kind.CHAR))
+                if (prefix.length == headCount) {
+                    val headChars = segments[segments.size - 2].chars.take(COMBO_CHARS)
+                    val lastChars = segments[segments.size - 1].chars.take(COMBO_CHARS)
+                    // 下标和 = 「两个字各自的常用度」的代理，小的排前面；sortBy 稳定，同级保持 i 序
+                    val combos = ArrayList<Pair<Int, String>>(headChars.length * lastChars.length)
+                    for (i in headChars.indices) {
+                        for (j in lastChars.indices) {
+                            combos.add((i + j) to buildString { append(headChars[i]); append(lastChars[j]) })
+                        }
+                    }
+                    combos.sortBy { it.first }
+                    for ((_, combo) in combos) {
+                        out.add(Candidate(prefix + combo, Kind.CHAR))
                         if (out.size >= limit) break
                     }
                 }
@@ -166,6 +186,9 @@ object PinyinEngine {
 
     /** 单个音节的数字最长 6 位（`zhuang` = 948264） */
     private const val MAX_SYLLABLE_DIGITS = 6
+
+    /** 多音节时，最后两个音节各取前多少个字参与组合（上限 6×6=36 个候选，够填满候选条） */
+    private const val COMBO_CHARS = 6
 
     /** 音节得分的归一化上限：同音字多到这个数就算「很常用」 */
     private const val PRODUCTIVE_CHARS = 40

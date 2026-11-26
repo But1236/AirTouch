@@ -39,27 +39,22 @@
         android:usesCleartextTraffic="false"
         tools:targetApi="s">
 
+        <!--
+          唯一 Activity / 唯一桌面入口：Jetpack Compose 版控制台。
+          旧版 PairingActivity（View 扫码页）与 ControlActivity（View 控制页）已整体删除，
+          扫码直接内嵌在 HomeScreen 的 1:1 取景框里，扫码结果在本 Activity 内建立连接。
+        -->
         <activity
-            android:name=".pairing.PairingActivity"
+            android:name=".ui.redesign.RedesignActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|screenLayout|uiMode|density"
             android:exported="true"
-            android:screenOrientation="portrait"
-            android:theme="@style/Theme.AirTouch">
+            android:label="@string/app_name"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <!--
-          选择：屏幕旋转不重建 Activity（configChanges 声明），连接因此天然存活；
-          不锁定横竖屏（不写 screenOrientation="portrait"），让用户可横屏使用触摸板。
-          PairingActivity 锁竖屏，因为相机取景框按竖屏标定更可控。
-        -->
-        <activity
-            android:name=".control.ControlActivity"
-            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|screenLayout|uiMode"
-            android:exported="false"
-            android:theme="@style/Theme.AirTouch" />
 
         <!--
           「收到的文件在哪」这个问题需要能直接打开：API ≥ 29 用 MediaStore 的 content:// 就能

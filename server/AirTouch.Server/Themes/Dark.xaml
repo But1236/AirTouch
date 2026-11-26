@@ -13,6 +13,9 @@
     <SolidColorBrush x:Key="ButtonSurfaceBrush" Color="#FF2C313B" />
     <SolidColorBrush x:Key="InsetBrush" Color="#FF15181D" />
     <SolidColorBrush x:Key="InsetDeepBrush" Color="#FF15181D" />
+    <!-- NeuProgress 的进度槽背景（App.xaml 的 NeuProgress 模板一直在引用它，但两个主题字典都漏了定义，
+         结果是槽体透明、只剩一根拖动条）。取值与 InsetDeepBrush 一致。 -->
+    <SolidColorBrush x:Key="InnerDarkBrush" Color="#FF15181D" />
     <SolidColorBrush x:Key="LogBgBrush" Color="#FF15181D" />
     <SolidColorBrush x:Key="TextBrush" Color="#FFE6E9F0" />
     <SolidColorBrush x:Key="MutedBrush" Color="#FF8A90A0" />

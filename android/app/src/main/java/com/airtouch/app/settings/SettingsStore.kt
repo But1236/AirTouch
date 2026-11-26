@@ -56,14 +56,27 @@ class SettingsStore(context: Context) {
     /**
      * 触摸板灵敏度倍数，范围 [0.5, 3.0]，默认 1.0。
      *
-     * 注意不要再把默认值调到 1.0 以上：View 内部还有一层 [com.airtouch.app.input.TouchpadView.BASE_SENSITIVITY]
-     * （1dp → 1.4 像素），两层相乘才是最终比例。默认 1.0 时 1dp ≈ 1.4px，与 Windows 手感接近。
+     * 注意不要再把默认值调到 1.0 以上：Compose 版 `RedesignController.sendMove` 会把指针位移
+     * 再乘一次这个倍数，默认 1.0 时与 Windows 手感接近。
      */
     var touchpadSensitivity: Float
         get() = clamp(prefs.getFloat(KEY_TOUCHPAD_SENS, 1.0f), MIN_TOUCHPAD_SENS, MAX_TOUCHPAD_SENS)
         set(value) = prefs.edit()
             .putFloat(KEY_TOUCHPAD_SENS, clamp(value, MIN_TOUCHPAD_SENS, MAX_TOUCHPAD_SENS))
             .apply()
+
+    /**
+     * **触摸零延时**（默认关闭）。
+     *
+     * - 关闭（默认）：手势状态机走「观察窗」模式 —— 第一下轻点先扣住 click 160ms 再补发（单击略有延迟），
+     *   换来的是双击拖拽**零起点偏移**（第一下的 click 被吞掉，不存在「点击在前、按下在后」，Windows
+     *   不会把那次按下当成双击第二下）。
+     * - 开启：单击零延迟（抬手立刻点击），但双击拖拽时为了走出 Windows 的 4×4px 双击判定框，
+     *   需要先把光标推约 3px 再按下左键 —— 拖拽起点会有这约 3px 的偏移。
+     */
+    var touchZeroLatency: Boolean
+        get() = prefs.getBoolean(KEY_TOUCH_ZERO_LATENCY, false)
+        set(value) = prefs.edit().putBoolean(KEY_TOUCH_ZERO_LATENCY, value).apply()
 
     /**
      * 触摸板的滚轮模式：开启后触摸板单指上下滑动 = 滚轮，而不是移动光标。
@@ -119,25 +132,49 @@ class SettingsStore(context: Context) {
      * 反向（上下）。
      *
      * v2.1 把上下方向的**默认值翻正了**：以前默认是反的，必须勾上才正常，用户反馈
-     * 「一直得勾着这个开关」。为了不让升级后手感突然反过来，这里做一次性迁移：
-     * 首次读取时把老值取反并写入迁移标记（老 `true` = 需要反向 → 新语义下应为 `false`）。
+     * 「一直得勾着这个开关」。为了不让升级后手感突然反过来，v2.1 做了一次性迁移：
+     * 把老值取反并写入迁移标记（老 `true` = 需要反向 → 新语义下应为 `false`）。
+     *
+     * **v2.1 的迁移有 bug（v2.2 修）**：它没有先判断「这个键到底有没有被存过」。
+     * 全新安装 / 清过数据的机器上 `getBoolean(KEY, false)` 返回 `false`，
+     * 取反后变成 `true` —— 也就是默认就替用户勾上了「上下反向」，方向自然一直是反的。
+     * 现在 [migrateInvertY] 分两步：只在**确实存在**老值时按老语义取反，
+     * 再把 v2.1 那次错误迁移的结果一次性纠正回 `false`。
+     * 用户在设置页里手动拨过开关之后（setter 会写 V22 标记）不再被任何迁移覆盖。
      */
     var airMouseInvertY: Boolean
         get() {
-            if (!prefs.getBoolean(KEY_AIRMOUSE_INV_Y_MIGRATED, false)) {
-                val migrated = !prefs.getBoolean(KEY_AIRMOUSE_INV_Y, false)
-                prefs.edit()
-                    .putBoolean(KEY_AIRMOUSE_INV_Y, migrated)
-                    .putBoolean(KEY_AIRMOUSE_INV_Y_MIGRATED, true)
-                    .apply()
-                return migrated
-            }
+            migrateInvertY()
             return prefs.getBoolean(KEY_AIRMOUSE_INV_Y, false)
         }
         set(value) = prefs.edit()
             .putBoolean(KEY_AIRMOUSE_INV_Y, value)
             .putBoolean(KEY_AIRMOUSE_INV_Y_MIGRATED, true)
+            .putBoolean(KEY_AIRMOUSE_INV_Y_MIGRATED_V22, true)
             .apply()
+
+    /** 见 [airMouseInvertY] 的注释；只在首次读取时各跑一次。 */
+    private fun migrateInvertY() {
+        // 第一步：v2.1 的老语义迁移 —— 只有老值真的存在过才取反。
+        if (!prefs.getBoolean(KEY_AIRMOUSE_INV_Y_MIGRATED, false)) {
+            val migrated = if (prefs.contains(KEY_AIRMOUSE_INV_Y)) {
+                !prefs.getBoolean(KEY_AIRMOUSE_INV_Y, false)
+            } else {
+                false
+            }
+            prefs.edit()
+                .putBoolean(KEY_AIRMOUSE_INV_Y, migrated)
+                .putBoolean(KEY_AIRMOUSE_INV_Y_MIGRATED, true)
+                .apply()
+        }
+        // 第二步：纠正 v2.1 在「没存过这个键」的机器上误判出来的「反向」。
+        if (!prefs.getBoolean(KEY_AIRMOUSE_INV_Y_MIGRATED_V22, false)) {
+            prefs.edit()
+                .putBoolean(KEY_AIRMOUSE_INV_Y, false)
+                .putBoolean(KEY_AIRMOUSE_INV_Y_MIGRATED_V22, true)
+                .apply()
+        }
+    }
 
     /**
      * 鼠标的滚轮模式：开启后**上下俯仰手机** = 滚轮（上下滚动），不再移动光标。
@@ -150,7 +187,7 @@ class SettingsStore(context: Context) {
     // ---------------- 键盘模式 ----------------
 
     /**
-     * 竖屏键盘当前的布局 id（见 [com.airtouch.app.input.keyboard.KeyboardLayouts]）。
+     * 竖屏键盘当前的布局 id（Compose 版用 "qwerty" / "t9" 两个值）。
      * 全屏（横屏）模式固定使用完整 104 键布局，与这个值无关。
      */
     var keyboardLayout: String
@@ -253,6 +290,7 @@ class SettingsStore(context: Context) {
         private const val KEY_LAST_PIN = "last_pin"
         private const val KEY_LAST_KEY_ID = "last_key_id"
         private const val KEY_TOUCHPAD_SENS = "touchpad_sensitivity"
+        private const val KEY_TOUCH_ZERO_LATENCY = "touch_zero_latency"
         private const val KEY_SCROLL_MODE = "scroll_mode"
         private const val KEY_ZOOM_PREFERENCE = "zoom_preference"
         private const val KEY_AIRMOUSE_SENS = "airmouse_sensitivity"
@@ -261,6 +299,9 @@ class SettingsStore(context: Context) {
 
         /** 上下方向默认值翻正的一次性迁移标记（见 [airMouseInvertY]） */
         private const val KEY_AIRMOUSE_INV_Y_MIGRATED = "airmouse_invert_y_migrated_v21"
+
+        /** v2.2：纠正 v2.1 迁移在「从没存过该键」的机器上误置的「上下反向」 */
+        private const val KEY_AIRMOUSE_INV_Y_MIGRATED_V22 = "airmouse_invert_y_migrated_v22"
         private const val KEY_AIRMOUSE_SCROLL = "airmouse_scroll_mode"
 
         // ---- 键盘模式 ----

@@ -131,6 +131,13 @@ public sealed class AirTouchServer : IDisposable
     private long _keyCommands;
     private long _textCommands;
     private long _touchCommands;
+    /// <summary>按下鼠标键那一刻的 move 计数：抬起时用差值算出「按住期间到底来了多少移动帧」。</summary>
+    private long _movesAtButtonDown;
+    /// <summary>同上，位移合计（判断这些帧是不是空帧）。</summary>
+    private long _moveSumDx;
+    private long _moveSumDy;
+    private long _moveDxAtButtonDown;
+    private long _moveDyAtButtonDown;
     private long _bytesReceived;
     private long _bytesSent;
 
@@ -826,11 +833,22 @@ public sealed class AirTouchServer : IDisposable
             return;
         }
 
+        // 调试留痕（用户要求）：把所有「非高频」指令记一行。move / touch 每帧都来、ping 也不停，
+        // 记了会瞬间刷满日志，所以只排除这四个；其余（key / text / button / click / scroll /
+        // reset / zoom_*）全部记下来 —— 拖拽正好是「一次 button + 一串 move + 一次 button」，
+        // 出问题时只要看日志里这一段，就能判断是手机没发、还是服务端没注入。
+        if (command.Kind is not (MessageKind.Move or MessageKind.Touch or MessageKind.Ping or MessageKind.Pong))
+        {
+            _log.Info($"收到指令：{Describe(command)}");
+        }
+
         switch (command.Kind)
         {
             case MessageKind.Move:
                 _mouse.Move(command.Dx, command.Dy);
                 Interlocked.Increment(ref _moveCommands);
+                Interlocked.Add(ref _moveSumDx, Math.Abs((long)command.Dx));
+                Interlocked.Add(ref _moveSumDy, Math.Abs((long)command.Dy));
                 break;
 
             case MessageKind.Click:
@@ -841,6 +859,23 @@ public sealed class AirTouchServer : IDisposable
             case MessageKind.Button:
                 // 一次状态变化一次注入（docs/PROTOCOL.md §2.1）：按下之后就是一串 move 帧 —— 那正是
                 // 拖拽；抬起由手机端负责发，服务端只做幂等记账（重复按下/空抬起都是空操作）。
+                if (command.ButtonDown)
+                {
+                    _movesAtButtonDown = Interlocked.Read(ref _moveCommands);
+                    _moveDxAtButtonDown = Interlocked.Read(ref _moveSumDx);
+                    _moveDyAtButtonDown = Interlocked.Read(ref _moveSumDy);
+                }
+                else
+                {
+                    // 诊断：按住期间到底收到了多少移动帧、位移合计是多少。
+                    // 「N>0 但光标没动」和「N>0 且光标动了却没拖动」是两种完全不同的故障，
+                    // 这一行把两者分开：位移合计≈0 → 手机发的是空帧/被截成 0；位移很大 → 帧没问题。
+                    var during = Interlocked.Read(ref _moveCommands) - _movesAtButtonDown;
+                    var sumX = Interlocked.Read(ref _moveSumDx) - _moveDxAtButtonDown;
+                    var sumY = Interlocked.Read(ref _moveSumDy) - _moveDyAtButtonDown;
+                    _log.Info($"松开鼠标键：按住期间收到 {during} 个 move 帧，位移合计 dx={sumX} dy={sumY}");
+                }
+
                 _mouse.Button(command.Button, command.ButtonDown);
                 break;
 
@@ -1490,4 +1525,23 @@ public sealed class AirTouchServer : IDisposable
 
     private static string Truncate(string value) =>
         value.Length <= 120 ? value : value[..120] + "…";
+
+    /// <summary>
+    /// 收到的一条指令的一行摘要（调试日志用）。拖拽这类「多帧拼出来的动作」出问题时，
+    /// 日志里能看到手机到底发了哪些帧、顺序对不对，比在手机上加计数器可靠得多。
+    /// </summary>
+    private static string Describe(ControlMessage c) => c.Kind switch
+    {
+        MessageKind.Button => $"button {c.Button} {(c.ButtonDown ? "down" : "up")}",
+        MessageKind.Click => $"click {c.Button}",
+        MessageKind.Scroll => $"scroll amount={c.Amount} delta={(c.ScrollDelta.HasValue ? c.ScrollDelta.Value.ToString() : "-")} axis={c.ScrollAxis}",
+        MessageKind.Key => $"key {(c.KeyDown ? "down" : "up")} vk=0x{c.VirtualKey:X2}",
+        MessageKind.Text => $"text \"{Truncate(c.Text)}\"",
+        MessageKind.Reset => "reset",
+        MessageKind.ZoomMode => $"zoom_mode {c.ZoomPreference}",
+        MessageKind.ZoomProbe => $"zoom_probe {c.ZoomPreference}",
+        MessageKind.FileHeader => $"file_header {c.FileName} {c.FileSize}B",
+        MessageKind.FileEnd => "file_end",
+        _ => c.Kind.ToString(),
+    };
 }

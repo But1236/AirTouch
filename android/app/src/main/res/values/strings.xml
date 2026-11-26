@@ -2,6 +2,8 @@
 <resources>
     <!-- 通用 -->
     <string name="app_name">AirTouch</string>
+    <!-- 重构后的 Compose 控制界面（第二个桌面图标） -->
+    <string name="redesign_activity_label">AirTouch 控制台</string>
 
     <!-- 配对界面 -->
     <string name="pairing_title">扫描电脑上的二维码</string>

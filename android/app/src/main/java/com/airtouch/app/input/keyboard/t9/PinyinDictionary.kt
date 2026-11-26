@@ -42,6 +42,30 @@ class PinyinDictionary(
     private val wordsByDigits: Map<String, List<String>>,
 ) {
 
+    /**
+     * **联想索引**：前缀（1 个字 / 2 个字）→ 以它开头的词。
+     *
+     * 词库本身是「按数字键查词」，没法回答「打了『你』之后下一句能接什么」；联想要的是**按汉字前缀**
+     * 查找，所以这里在建表时顺手倒排一份。只有在构造时算一次（解析本来就在后台线程），运行时零成本。
+     *
+     * 顺序：同一前缀下保持词库里的相对顺序（词库是按词频排的，所以靠前的就是常用词）。
+     */
+    private val wordsByPrefix: Map<String, List<String>> = run {
+        val acc = HashMap<String, MutableList<String>>()
+        for (list in wordsByDigits.values) {
+            for (word in list) {
+                if (word.length < 2) continue          // 单字不是"词"，做联想没有意义
+                val head1 = word.substring(0, 1)
+                acc.getOrPut(head1) { ArrayList() }.add(word)
+                if (word.length >= 3) {
+                    val head2 = word.substring(0, 2)
+                    acc.getOrPut(head2) { ArrayList() }.add(word)
+                }
+            }
+        }
+        acc
+    }
+
     /** 某个数字序列上的候选汉字（按字频降序）。没有对应汉字返回空串 */
     fun charsFor(digits: String): String = charsByDigits[digits].orEmpty()
 
@@ -50,6 +74,35 @@ class PinyinDictionary(
 
     /** 这个数字序列能不能自成一个音节（拼音切分时用） */
     fun isSyllable(digits: String): Boolean = charsByDigits.containsKey(digits)
+
+    /**
+     * **联想**：以 [text] 的结尾为上下文的常用词，用来在「上屏一个字/词之后」继续给候选。
+     *
+     * 先用**两个字**的上下文找（更准，例如「你好」→ 你好吗），找不到再用**最后一个字**
+     * （「你」→ 你好/你们/你的…）。返回的列表里不会出现和上下文完全相同的那个词。
+     *
+     * @param limit 最多返回几个
+     */
+    fun predictions(text: String, limit: Int): List<String> {
+        if (text.isEmpty() || limit <= 0) return emptyList()
+        val out = ArrayList<String>(limit)
+        if (text.length >= 2) {
+            for (word in wordsByPrefix[text.substring(text.length - 2)].orEmpty()) {
+                if (word == text) continue
+                out.add(word)
+                if (out.size >= limit) return out
+            }
+        }
+        for (word in wordsByPrefix[text.substring(text.length - 1)].orEmpty()) {
+            if (word == text || out.contains(word)) continue
+            out.add(word)
+            if (out.size >= limit) break
+        }
+        return out
+    }
+
+    /** 词库里一共有多少词条（诊断/测试用） */
+    val wordCount: Int get() = wordsByDigits.values.sumOf { it.size }
 
     /** 词库是否成功读到了内容。空词库只可能是「资源损坏/没打进包」，界面要如实提示 */
     val isEmpty: Boolean get() = charsByDigits.isEmpty()

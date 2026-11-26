@@ -98,6 +98,26 @@ public static class TestJson
             : 0;
     }
 
+    /// <summary>
+    /// Reads a boolean field, keeping "explicit false" distinguishable from "absent" — the zoom frames
+    /// carry <c>available:false</c>, which must not be confused with a missing field.
+    /// </summary>
+    public static bool? GetBool(string json, string property)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty(property, out var element))
+        {
+            return null;
+        }
+
+        return element.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null,
+        };
+    }
+
     public static string Describe(byte[] payload, int max = 200)
     {
         var text = Encoding.UTF8.GetString(payload);

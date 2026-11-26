@@ -68,3 +68,9 @@ desktop.ini
 
 # ---- personal notes ----
 .toeit/
+
+# ---- local toolchain / build residue (never commit) ----
+.android-home/
+_cc/
+.idea/caches/
+

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -94,10 +95,39 @@ public partial class App : Application
     /// <summary>True during <c>--smoke-test</c>: report errors instead of showing modal dialogs.</summary>
     public static bool HeadlessSelfTest { get; private set; }
 
+    /// <summary>
+    /// 兜底：这台机器上 WPF 的硬件渲染/上屏路径画不出任何东西 —— 窗口 client area 在屏幕上是
+    /// 整片纯白（实测 pure white ≈92%、暗像素只有 0.4%，连一个最小 WPF 空窗口也一样），
+    /// 而同一个进程用 <c>RenderTargetBitmap</c>（软件光栅化）渲染出来的图是完整正确的：
+    /// 二维码、面板、文字都在。也就是说视觉树没问题，坏的只是上屏那一步。
+    /// 界面很轻（几块卡片 + 一张二维码 + 一个日志列表），软件渲染完全够用，
+    /// 所以直接强制软件渲染。需要在这台机器上做硬件路径对比时，设 <c>AIRTOUCH_FORCE_HW=1</c> 可关掉它。
+    /// </summary>
+    private static void EnsureRenderable()
+    {
+        try
+        {
+            if (string.Equals(
+                    Environment.GetEnvironmentVariable("AIRTOUCH_FORCE_HW"),
+                    "1",
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
+        }
+        catch
+        {
+            // 设置渲染模式失败绝不能影响服务本体：最坏情况就是回到原来的空白窗口。
+        }
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
+        EnsureRenderable();
         SetTheme(ThemeMode.Dark);
 
         _options = AirTouchOptions.CreateDefault();

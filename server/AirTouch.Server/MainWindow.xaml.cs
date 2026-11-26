@@ -35,6 +35,13 @@ public partial class MainWindow : Window
     private IReadOnlyList<TrustedDevice> _trustedSnapshot = Array.Empty<TrustedDevice>();
     private bool _pulsing;
 
+    // 「丢文件进 push 目录就自动发到手机」：省掉「手点发送文件 → 在对话框里翻文件」两步。
+    // AI 每次改完 APK 想直接推到手机时用这条路径（也方便任何人脚本化地推文件）。
+    private readonly DispatcherTimer _pushTimer = new() { Interval = TimeSpan.FromSeconds(2.0) };
+    private readonly Dictionary<string, long> _pushSeen = new();
+
+    private string PushDirectory => System.IO.Path.Combine(_options.DataDirectory, "push");
+
     public MainWindow(AirTouchOptions options, AirTouchLog log)
     {
         _options = options;
@@ -74,6 +81,9 @@ public partial class MainWindow : Window
         SyncThemeControls();
         SyncAccentControls();
         UpdateUi();
+
+        _pushTimer.Tick += (_, _) => TryPushWatchedFile();
+        _pushTimer.Start();
 
         KeyDown += (_, e) =>
         {
@@ -921,8 +931,107 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnOpenDownloadClick(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// 每 2 秒看一次 push 目录，把「已经复制完」的第一个文件推到手机，成功后挪到 push\sent。
+    /// 大小连续两轮不变才算复制完（否则会把写到一半的文件发出去）；一次只发一个，
+    /// 手机没连接时安静地等（文件留在原地，连上就自动发）。日志里能看到「开始发送文件 …」。
+    /// </summary>
+    private async void TryPushWatchedFile()
     {
+        if (_sending)
+        {
+            return;
+        }
+
+        string dir;
+        try
+        {
+            dir = PushDirectory;
+            Directory.CreateDirectory(dir);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"建立推送目录失败：{ex.Message}");
+            return;
+        }
+
+        string[] files;
+        try
+        {
+            files = Directory.GetFiles(dir);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"读取推送目录失败：{ex.Message}");
+            return;
+        }
+
+        foreach (var file in files)
+        {
+            var name = System.IO.Path.GetFileName(file);
+            long size;
+            try
+            {
+                size = new FileInfo(file).Length;
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (size <= 0)
+            {
+                continue;
+            }
+
+            if (!_pushSeen.TryGetValue(name, out var last) || last != size)
+            {
+                _pushSeen[name] = size;
+                continue;
+            }
+
+            _pushSeen.Remove(name);
+            _sending = true;
+            SendProgress.Value = 0;
+            UpdateUi();
+            try
+            {
+                var result = await _server.SendFileAsync(file);
+                if (result.Success)
+                {
+                    var sentDir = System.IO.Path.Combine(dir, "sent");
+                    try
+                    {
+                        Directory.CreateDirectory(sentDir);
+                        File.Move(file, System.IO.Path.Combine(sentDir, name), overwrite: true);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warn($"已发送但归档失败：{name}（{ex.Message}）");
+                    }
+
+                    ShowToast($"已发送 {result.FileName}");
+                }
+                else if (!result.Message.Contains("没有已连接"))
+                {
+                    _log.Warn($"推送 {name} 失败：{result.Message}（下一轮重试）");
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Error($"推送 {name} 出错", ex);
+            }
+            finally
+            {
+                _sending = false;
+                UpdateUi();
+            }
+
+            return;
+        }
+    }
+
+    private void OnOpenDownloadClick(object sender, RoutedEventArgs e)    {
         try
         {
             Directory.CreateDirectory(_options.DownloadDirectory);

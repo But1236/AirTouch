@@ -13,6 +13,8 @@
     <SolidColorBrush x:Key="ButtonSurfaceBrush" Color="#FFF8FAFD" />
     <SolidColorBrush x:Key="InsetBrush" Color="#FFE2E7F0" />
     <SolidColorBrush x:Key="InsetDeepBrush" Color="#FFE2E7F0" />
+    <!-- 见 Dark.xaml 同名条目：NeuProgress 进度槽用的键以前没定义，槽体是透明的。 -->
+    <SolidColorBrush x:Key="InnerDarkBrush" Color="#FFE2E7F0" />
     <SolidColorBrush x:Key="LogBgBrush" Color="#FFE2E7F0" />
     <SolidColorBrush x:Key="TextBrush" Color="#FF1E293B" />
     <SolidColorBrush x:Key="MutedBrush" Color="#FF64748B" />

@@ -83,6 +83,19 @@ public sealed class Win32MouseController : IMouseController
     private const uint MouseEventRightUp = 0x0010;
     private const uint MouseEventWheel = 0x0800;
     private const uint MouseEventHWheel = 0x01000;
+    private const uint MouseEventAbsolute = 0x8000;
+    private const uint MouseEventVirtualDesk = 0x4000;
+
+    /// <summary><c>SM_CXDOUBLECLK</c>: Windows 认为「两次点击落在同一点」的方框半径（默认 4px）。</summary>
+    private const int SmCxDoubleClk = 36;
+
+    private const int SmVirtualScreenX = 76;
+    private const int SmVirtualScreenY = 77;
+    private const int SmVirtualScreenWidth = 78;
+    private const int SmVirtualScreenHeight = 79;
+
+    /// <summary>闪避「双击判定框」时先偏出去多少像素（必须大于 <see cref="SmCxDoubleClk"/>）。</summary>
+    private const int DodgePixels = 8;
 
     /// <summary>Protocol-level clamp; keeps a hostile client from teleporting the cursor off screen.</summary>
     public const int MaxStepPixels = 4096;
@@ -113,6 +126,11 @@ public sealed class Win32MouseController : IMouseController
     private long _scrollCount;
     private long _resetCount;
     private long _sendInputFailures;
+
+    /// <summary>上一次左键单击的位置与时刻（用于「双击拖拽」的闪避判定，见 <see cref="TryGetDoubleClickDodge"/>）。</summary>
+    private int _lastClickX;
+    private int _lastClickY;
+    private long _lastClickTick = long.MinValue;
 
     public Win32MouseController(IAirTouchLog? log = null)
     {
@@ -178,6 +196,13 @@ public sealed class Win32MouseController : IMouseController
 
         Send(inputs, "click");
         Interlocked.Increment(ref _clickCount);
+
+        if (button == MouseButton.Left && GetCursorPos(out var point))
+        {
+            _lastClickX = point.X;
+            _lastClickY = point.Y;
+            _lastClickTick = Environment.TickCount64;
+        }
     }
 
     public void Button(MouseButton button, bool down)
@@ -209,16 +234,43 @@ public sealed class Win32MouseController : IMouseController
             ? (down ? MouseEventRightDown : MouseEventRightUp)
             : (down ? MouseEventLeftDown : MouseEventLeftUp);
 
+        var press = new Input { Type = InputMouse, Data = new InputUnion { Mouse = new MouseInput { Flags = flags } } };
+
+        // 双击拖拽的关键：手机是「第一下轻点 = click，第二下按住 = button down」，而 Windows 只要看到
+        // 「上一次点击之后、光标还在同一个点（SM_CXDOUBLECLK≈4px 以内）、时间还在双击窗口内」就又按下去，
+        // 就把这一次按下当成「双击的第二下」—— 双击动作（打开图标、标题栏最大化…）会把拖拽整个顶掉。
+        // 所以命中这个条件时，这次按下先用绝对定位把光标偏开 8px、按下、再精确回到原位：
+        // 拖拽起点仍然是用户按下的那个点（回位走 MOUSEEVENTF_ABSOLUTE，不受指针加速影响，没有误差），
+        // 而被拖的东西只会看到「+8px 又 -8px」，净位移为 0，不会跳。
+        var pressX = 0;
+        var pressY = 0;
+        var dodge = !isRight && down && TryGetDoubleClickDodge(out pressX, out pressY);
+
         // One state transition per SendInput call, exactly like a key frame: the press stays down until the
         // client sends the matching release, which is what makes a stream of move frames drag.
-        var inputs = new[]
-        {
-            new Input { Type = InputMouse, Data = new InputUnion { Mouse = new MouseInput { Flags = flags } } },
-        };
+        var inputs = dodge
+            ? new[] { AbsoluteMove(pressX + DodgePixels, pressY), press, AbsoluteMove(pressX, pressY) }
+            : new[] { press };
 
-        Send(inputs, $"button {name} {(down ? "down" : "up")}");
+        Send(inputs, dodge
+            ? $"button {name} down（闪避双击判定：偏 {DodgePixels}px 按下后回位 {pressX},{pressY}）"
+            : $"button {name} {(down ? "down" : "up")}");
         Interlocked.Increment(ref _buttonCount);
+
+        // 诊断：注入之后再问一次系统「左键到底按着没有」。SendInput 被接受 ≠ 系统真的按着
+        // （UIPI、注入目标、桌面切换都可能让它被吞掉）。手机显示按住了、电脑却不拖时，
+        // 就看这一行 —— 只有它能把「帧没到」「注入没生效」「拖拽被别的东西打断」三者分开。
+        var held = (GetAsyncKeyState(VkLeftButton) & 0x8000) != 0;
+        // 抬起这一帧要额外看「注入之前」的状态：如果不是「按着」，说明拖拽中途有别的东西
+        // 把左键松开过（watchdog、别的客户端、第三方鼠标工具都会），那拖拽当然断在半路。
+        var heldBefore = down ? held : (GetAsyncKeyState(VkLeftButton) & 0x8000) != 0;
+        _log.Info(down
+            ? $"注入 button {name} down → 系统认为左键 {(held ? "按着" : "松开")}"
+            : $"注入 button {name} up → 注入前系统认为左键 {(heldBefore ? "按着" : "松开")}，注入后 {(held ? "按着" : "松开")}");
     }
+
+    /// <summary>虚拟键码：鼠标左键（GetAsyncKeyState 用）。</summary>
+    private const int VkLeftButton = 0x01;
 
     public void ReleaseAllButtons()
     {
@@ -378,6 +430,75 @@ public sealed class Win32MouseController : IMouseController
         public int Y;
     }
 
+    /// <summary>
+    /// 这次「按下左键」会不会被 Windows 当成「双击的第二下」？命中则给出当前光标位置，
+    /// 由调用方先偏开 <see cref="DodgePixels"/> 再按下、然后回位。
+    /// </summary>
+    /// <remarks>
+    /// 三个条件缺一不可：上一次输入是**左键单击**、时间还在系统双击窗口（<c>GetDoubleClickTime</c>，
+    /// 默认 500ms）内、光标还停在系统双击判定框（<c>SM_CXDOUBLECLK</c>，默认 4px）里。
+    /// 只有真正的「拖拽」才会走 <c>button down</c>（双击走的是 <c>click</c>），所以这里闪避不会影响双击。
+    /// </remarks>
+    private bool TryGetDoubleClickDodge(out int x, out int y)
+    {
+        x = 0;
+        y = 0;
+
+        if (_lastClickTick == long.MinValue)
+        {
+            return false;
+        }
+
+        if (Environment.TickCount64 - _lastClickTick > GetDoubleClickTime())
+        {
+            return false;
+        }
+
+        if (!GetCursorPos(out var point))
+        {
+            return false;
+        }
+
+        var box = Math.Max(1, GetSystemMetrics(SmCxDoubleClk));
+        if (Math.Abs(point.X - _lastClickX) > box || Math.Abs(point.Y - _lastClickY) > box)
+        {
+            return false;
+        }
+
+        x = point.X;
+        y = point.Y;
+        return true;
+    }
+
+    /// <summary>
+    /// 绝对定位移动（<c>MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK</c>）。
+    /// 与相对移动不同，绝对定位**不受指针加速影响**，所以「偏 8px 再偏回来」是零误差的。
+    /// </summary>
+    private static Input AbsoluteMove(int x, int y)
+    {
+        var left = GetSystemMetrics(SmVirtualScreenX);
+        var top = GetSystemMetrics(SmVirtualScreenY);
+        var width = Math.Max(1, GetSystemMetrics(SmVirtualScreenWidth) - 1);
+        var height = Math.Max(1, GetSystemMetrics(SmVirtualScreenHeight) - 1);
+
+        var nx = (int)Math.Round((x - left) * 65535.0 / width);
+        var ny = (int)Math.Round((y - top) * 65535.0 / height);
+
+        return new Input
+        {
+            Type = InputMouse,
+            Data = new InputUnion
+            {
+                Mouse = new MouseInput
+                {
+                    Dx = Math.Clamp(nx, 0, 65535),
+                    Dy = Math.Clamp(ny, 0, 65535),
+                    Flags = MouseEventMove | MouseEventAbsolute | MouseEventVirtualDesk,
+                },
+            },
+        };
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint numberOfInputs, Input[] inputs, int sizeOfInputStructure);
 
@@ -388,6 +509,15 @@ public sealed class Win32MouseController : IMouseController
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetCursorPos(out Point32 point);
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int virtualKey);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDoubleClickTime();
 }
 
 /// <summary>Test double: records every command instead of touching the real cursor.</summary>
